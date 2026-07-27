@@ -1,0 +1,33 @@
+# Python (backend)
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node (frontend)
+node_modules/
+dist/
+.vite/
+*.local
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+azure-credentials.json
+service-account*.json
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
