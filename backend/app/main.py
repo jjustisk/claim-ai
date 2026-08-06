@@ -1,7 +1,15 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from app.database import engine, Base
+import app.schema
 
-app = FastAPI(title="Claim AI API", version="0.0.1")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
 
+app = FastAPI(lifespan=lifespan, title="Claim AI API", version="0.0.1")
 
 @app.get("/health")
 def health() -> dict:
