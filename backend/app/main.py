@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.database import engine, Base
+from app.storage import close_blob_service_client
 import app.schema
 
 @asynccontextmanager
@@ -8,6 +9,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
+    await close_blob_service_client()
 
 app = FastAPI(lifespan=lifespan, title="Claim AI API", version="0.0.1")
 

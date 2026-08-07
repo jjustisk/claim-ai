@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
 
+    azure_storage_connection_string: str = ""
+    azure_storage_images_container_name: str = "claims-images"
+
     model_config = {"env_file": "../.env"}
 
 settings = Settings()
