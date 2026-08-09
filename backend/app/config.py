@@ -1,3 +1,4 @@
+import os
 from pydantic_settings import BaseSettings
 
 from app.secrets import (
@@ -18,7 +19,7 @@ class Settings(BaseSettings):
     pinecone_environment: str = ""
 
     database_url: str = ""
-    jwt_secret_key: str = "changeme"
+    jwt_secret_key: str = ""
     azure_storage_connection_string: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
@@ -31,29 +32,30 @@ class Settings(BaseSettings):
 def load_settings() -> Settings:
     settings = Settings()
 
-    if is_running_on_azure():
-        updates: dict[str, str] = {}
-        missing: list[str] = []
-
-        for secret_name, field_name in VAULT_SECRET_FIELDS.items():
-            value = get_keyvault_secret(secret_name)
-            if value:
-                updates[field_name] = value
-            elif field_name == "database_url":
-                missing.append(secret_name)
-
-        if missing:
-            raise ValueError(
-                f"Required Key Vault secret(s) missing: {', '.join(missing)}. "
-                f"Vault: {get_key_vault_url()}"
+    if os.getenv("CI") == "true" and not is_running_on_azure():
+        if not settings.database_url:
+            settings = settings.model_copy(
+                update={"database_url": "postgresql://ci:ci@localhost/ci"}
             )
+        return settings
 
-        return settings.model_copy(update=updates)
+    updates: dict[str, str] = {}
+    missing: list[str] = []
 
-    if not settings.database_url:
-        raise ValueError("DATABASE_URL is required in .env for local development")
+    for secret_name, field_name in VAULT_SECRET_FIELDS.items():
+        value = get_keyvault_secret(secret_name)
+        if value:
+            updates[field_name] = value
+        elif field_name == "database_url":
+            missing.append(secret_name)
 
-    return settings
+    if missing:
+        raise ValueError(
+            f"Required Key Vault secret(s) missing: {', '.join(missing)}. "
+            f"Vault: {get_key_vault_url()}"
+        )
+
+    return settings.model_copy(update=updates)
 
 
 settings = load_settings()

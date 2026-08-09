@@ -21,7 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import dotenv_values
 
-from app.secrets import ENV_VAULT_SECRETS, get_key_vault_name
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+from app.secrets import env_var_to_secret_name, get_key_vault_name, get_key_vault_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INFRA_DIR = REPO_ROOT / "infra"
@@ -305,19 +308,25 @@ def deploy_keyvault(
 
 
 def seed_secrets(*, vault_name: str, env_file: Path, dry_run: bool) -> None:
-    _require_az()
-
     if not env_file.exists():
         print(f"ERROR: Env file not found: {env_file}")
         sys.exit(1)
 
     env_values = dotenv_values(env_file)
     seeded = 0
+    skipped = 0
 
-    for env_var, secret_name in ENV_VAULT_SECRETS.items():
-        value = env_values.get(env_var, "")
-        if not value or value == "changeme":
+    client = None
+    if not dry_run:
+        vault_url = get_key_vault_url() if vault_name == get_key_vault_name() else f"https://{vault_name}.vault.azure.net/"
+        client = SecretClient(vault_url=vault_url, credential=DefaultAzureCredential())
+        print(f"Seeding vault: {vault_url}")
+
+    for env_var, value in env_values.items():
+        secret_name = env_var_to_secret_name(env_var)
+        if not value or not str(value).strip():
             print(f"  [skip] {secret_name} ({env_var} empty)")
+            skipped += 1
             continue
 
         if dry_run:
@@ -325,24 +334,12 @@ def seed_secrets(*, vault_name: str, env_file: Path, dry_run: bool) -> None:
             seeded += 1
             continue
 
-        _run(
-            [
-                "az",
-                "keyvault",
-                "secret",
-                "set",
-                "--vault-name",
-                vault_name,
-                "--name",
-                secret_name,
-                "--value",
-                value,
-            ]
-        )
+        assert client is not None
+        client.set_secret(secret_name, value)
         print(f"  [ok] {secret_name}")
         seeded += 1
 
-    print(f"Done — {seeded} secret(s) processed.")
+    print(f"Done — {seeded} secret(s) set, {skipped} skipped (empty).")
 
 
 def main() -> None:
