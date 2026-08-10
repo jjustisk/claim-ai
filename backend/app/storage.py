@@ -40,6 +40,16 @@ async def get_images_container_client() -> ContainerClient:
     return await get_container_client(settings.azure_storage_images_container_name)
 
 
+async def get_videos_container_client() -> ContainerClient:
+    """Return a client for the claims-videos blob container."""
+    return await get_container_client(settings.azure_storage_videos_container_name)
+
+
+async def get_pds_policies_container_client() -> ContainerClient:
+    """Return a client for the pds-policies blob container."""
+    return await get_container_client(settings.azure_storage_pds_policies_container_name)
+
+
 async def ensure_container_exists(container_name: str) -> ContainerClient:
     """Create the container if it does not already exist."""
     container = await get_container_client(container_name)
@@ -130,5 +140,87 @@ async def list_images(prefix: str = "") -> list[str]:
     """List image blob names in the claims-images container."""
     return await list_blobs(
         container_name=settings.azure_storage_images_container_name,
+        prefix=prefix,
+    )
+
+
+async def upload_video(
+    blob_name: str,
+    data: bytes,
+    *,
+    content_type: str | None = None,
+    overwrite: bool = True,
+) -> str:
+    """Upload a video to the claims-videos container."""
+    return await upload_blob(
+        blob_name,
+        data,
+        container_name=settings.azure_storage_videos_container_name,
+        content_type=content_type,
+        overwrite=overwrite,
+    )
+
+
+async def download_video(blob_name: str) -> bytes:
+    """Download a video from the claims-videos container."""
+    return await download_blob(
+        blob_name,
+        container_name=settings.azure_storage_videos_container_name,
+    )
+
+
+async def delete_video(blob_name: str) -> None:
+    """Delete a video from the claims-videos container."""
+    await delete_blob(
+        blob_name,
+        container_name=settings.azure_storage_videos_container_name,
+    )
+
+
+async def list_videos(prefix: str = "") -> list[str]:
+    """List video blob names in the claims-videos container."""
+    return await list_blobs(
+        container_name=settings.azure_storage_videos_container_name,
+        prefix=prefix,
+    )
+
+
+async def upload_pds_policy(
+    blob_name: str,
+    data: bytes,
+    *,
+    content_type: str | None = "application/pdf",
+    overwrite: bool = True,
+) -> str:
+    """Upload a policy PDF to the pds-policies container."""
+    return await upload_blob(
+        blob_name,
+        data,
+        container_name=settings.azure_storage_pds_policies_container_name,
+        content_type=content_type,
+        overwrite=overwrite,
+    )
+
+
+async def download_pds_policy(blob_name: str) -> bytes:
+    """Download a policy PDF from the pds-policies container."""
+    return await download_blob(
+        blob_name,
+        container_name=settings.azure_storage_pds_policies_container_name,
+    )
+
+
+async def delete_pds_policy(blob_name: str) -> None:
+    """Delete a policy PDF from the pds-policies container."""
+    await delete_blob(
+        blob_name,
+        container_name=settings.azure_storage_pds_policies_container_name,
+    )
+
+
+async def list_pds_policies(prefix: str = "") -> list[str]:
+    """List policy PDF blob names in the pds-policies container."""
+    return await list_blobs(
+        container_name=settings.azure_storage_pds_policies_container_name,
         prefix=prefix,
     )
