@@ -13,3 +13,4 @@ azure-storage-blob==12.24.0
 azure-identity==1.19.0
 azure-keyvault-secrets==4.9.0
 python-multipart==0.0.12
+aiohttp==3.10.10
