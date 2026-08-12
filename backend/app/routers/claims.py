@@ -7,6 +7,7 @@ from app.database import get_db
 from app.dependencies import require_claimant
 from app.schema import Claim, ClaimDocument
 from app.config import settings
+from app.sanitization import sanitize_free_text
 
 router = APIRouter(prefix="/claims", tags=["claims"])
 
@@ -22,6 +23,8 @@ async def submit_claim(
     user: dict = Depends(require_claimant),
     db: AsyncSession = Depends(get_db),
 ):
+    description = sanitize_free_text(description)
+
     claim = Claim(
         customer_id=int(user["sub"]),
         policy_id=policy_id,
