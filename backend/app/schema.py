@@ -13,8 +13,10 @@ class Customer(Base):
     customer_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)   
     phone = Column(String(20))
     address = Column(Text)
+
 
     claims = relationship("Claim", back_populates="customer")
     notifications = relationship("Notification", back_populates="customer")
@@ -26,6 +28,7 @@ class Assessor(Base):
     assessor_id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     email = Column(String(100), unique=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)   
     role = Column(String(50))
 
     reviews = relationship("Review", back_populates="assessor")
