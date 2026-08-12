@@ -7,7 +7,7 @@ from functools import lru_cache
 
 from azure.core.credentials import TokenCredential
 from azure.core.exceptions import ResourceNotFoundError
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from azure.identity import AzureCliCredential, ManagedIdentityCredential
 from azure.keyvault.secrets import SecretClient
 
 KEY_VAULT_NAME = "claim-ai-kv"
@@ -85,7 +85,7 @@ def get_azure_credential() -> TokenCredential:
     if is_running_on_azure():
         _credential = ManagedIdentityCredential()
     else:
-        _credential = DefaultAzureCredential(exclude_managed_identity_credential=True)
+        _credential = AzureCliCredential()
 
     return _credential
 

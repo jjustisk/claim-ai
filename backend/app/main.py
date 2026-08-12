@@ -4,6 +4,7 @@ from app.database import engine, Base
 from app.routers import auth as auth_router
 from app.dependencies import require_assessor, require_claimant
 from app.storage import close_blob_service_client
+from app.routers import claims as claims_router
 import app.schema
 
 @asynccontextmanager
@@ -15,6 +16,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title="Claim AI API", version="0.0.1")
 app.include_router(auth_router.router)
+app.include_router(claims_router.router)
+
 @app.get("/health")
 def health() -> dict:
     """Basic liveness check. Extend later to also ping the database."""
