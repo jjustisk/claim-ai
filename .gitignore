@@ -31,5 +31,9 @@ service-account*.json
 Thumbs.db
 *_Zone.Identifier
 
+# ChromaDB local data
+data/chroma/
+backend/data/chroma/
+
 # Logs
 *.log
