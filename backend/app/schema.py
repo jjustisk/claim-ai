@@ -5,6 +5,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
+import enum
 
 
 class Customer(Base):
@@ -59,15 +60,24 @@ class PDSDocument(Base):
 
     policy = relationship("Policy", back_populates="pds_documents")
 
+class ClaimStatus(str, enum.Enum):
+    """ Allowed values for the status. """
+    SUBMITTED = "submitted"
+    UNDER_REVIEW = "under_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CLOSED = "closed"
+
 
 class Claim(Base):
     __tablename__ = "claim"
 
     claim_id = Column(Integer, primary_key=True, index=True)
+    claim_reference = Column(String(20), unique=True, nullable=False, index=True)
     customer_id = Column(Integer, ForeignKey("customer.customer_id"), nullable=False)
     policy_id = Column(Integer, ForeignKey("policy.policy_id"), nullable=False)
     submission_date = Column(DateTime, default=datetime.utcnow)
-    status = Column(String(50), default="submitted")
+    status = Column(String(50), default=ClaimStatus.SUBMITTED.value, nullable=False)
     priority_level = Column(Integer, default=0)
     fraud_risk_score = Column(Float, default=0.0)
     cost = Column(Numeric(12, 2))
