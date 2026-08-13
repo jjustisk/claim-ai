@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     azure_storage_pds_policies_container_name: str = "pds-policies"
     pinecone_environment: str = ""
 
+    chroma_host: str = ""
+    chroma_port: int = 8000
+    chroma_persist_directory: str = "./data/chroma"
+    chroma_collection_name: str = "claim-ai"
+
     database_url: str = ""
     jwt_secret_key: str = ""
     azure_storage_connection_string: str = ""
