@@ -5,9 +5,10 @@ from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.blob import ContentSettings
 from app.database import get_db
 from app.dependencies import require_claimant
-from app.schema import Claim, ClaimDocument
+from app.schema import Claim, ClaimDocument, ClaimStatus
 from app.config import settings
 from app.sanitization import sanitize_free_text
+from app.claim_reference import generate_claim_reference
 
 router = APIRouter(prefix="/claims", tags=["claims"])
 
@@ -26,9 +27,10 @@ async def submit_claim(
     description = sanitize_free_text(description)
 
     claim = Claim(
+        claim_reference=generate_claim_reference(),
         customer_id=int(user["sub"]),
         policy_id=policy_id,
-        status="submitted",
+        status=ClaimStatus.SUBMITTED.value,
     )
     db.add(claim)
     await db.flush()
@@ -64,6 +66,7 @@ async def submit_claim(
 
     return {
         "claim_id": claim.claim_id,
+        "claim_reference": claim.claim_reference,
         "status": claim.status,
         "files_uploaded": len(files),
     }
