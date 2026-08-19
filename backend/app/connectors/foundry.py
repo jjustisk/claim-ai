@@ -19,7 +19,7 @@ from azure.ai.projects import AIProjectClient
 from azure.identity import get_bearer_token_provider
 
 from app.config import settings
-from app.secrets import get_azure_credential
+from app.connectors.secrets import get_azure_credential
 
 if TYPE_CHECKING:
     from openai import OpenAI

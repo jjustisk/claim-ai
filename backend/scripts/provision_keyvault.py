@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import dotenv_values
 
-from app.secrets import (
+from app.connectors.secrets import (
     create_provisioning_secret_client,
     env_var_to_secret_name,
     get_key_vault_name,
@@ -230,7 +230,7 @@ def grant_app_access(
         principal_type="ServicePrincipal",
     )
     print(
-        "Done. Set APP_CLIENT_ID in app/secrets.py and share the app registration "
+        "Done. Set APP_CLIENT_ID in app/connectors/secrets.py and share the app registration "
         "client secret with the team as AZURE_CLIENT_SECRET (one shared app credential)."
     )
 

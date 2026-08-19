@@ -4,7 +4,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
-from app.database import Base
+from app.connectors.db import Base
 import enum
 
 

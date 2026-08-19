@@ -7,8 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.claim_reference import generate_claim_reference
-from app.database import get_sync_connection
+from app.services.claim_service import generate_claim_reference
+from app.connectors.db import get_sync_connection
 
 conn = get_sync_connection()
 conn.autocommit = False

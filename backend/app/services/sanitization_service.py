@@ -1,3 +1,10 @@
+"""Clean user-typed text before it is stored or sent to a model.
+
+Strips control characters, HTML, and common prompt-injection phrases.
+Call `sanitize_free_text()` from claim and assessor flows — do not copy
+these regexes into routers or pages.
+"""
+
 import re
 import unicodedata
 import html

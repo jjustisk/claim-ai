@@ -1,26 +1,26 @@
 # External Service Connections
 
-Each outside service (database, file storage, etc.) has its own file in `app/`. The rest of the app should use those files instead of setting up connections on its own.
+Each outside service (database, file storage, etc.) has its own file in `app/connectors/`. The rest of the app should use those files instead of setting up connections on its own.
 
 ```
-Application Code
+api/ and services/
       |
-      +-- storage.py --------> Azure Blob Storage
+      +-- app/connectors/storage.py --------> Azure Blob Storage
       |
-      +-- database.py --------> PostgreSQL
+      +-- app/connectors/db.py -------------> PostgreSQL
       |
-      +-- chromadb_store.py ---> ChromaDB
+      +-- app/connectors/chromadb_store.py -> ChromaDB
       |
-      +-- foundry.py ----------> Azure AI Foundry (GPT 5.5, Claude via model-router)
+      +-- app/connectors/foundry.py --------> Azure AI Foundry (GPT 5.5, Claude via model-router)
       |
-      +-- secrets.py ----------> Azure Key Vault
+      +-- app/connectors/secrets.py --------> Azure Key Vault
 ```
 
-Connection details (passwords, URLs, keys) are loaded in `app/config.py`, which gets them from `app/secrets.py`. The connection files read from `settings` — they do not talk to Key Vault directly.
+Connection details (passwords, URLs, keys) are loaded in `app/config.py`, which gets them from `app/connectors/secrets.py`. The connection files read from `settings` — they do not talk to Key Vault directly.
 
 ---
 
-## `app/secrets.py` — Azure Key Vault
+## `app/connectors/secrets.py` — Azure Key Vault
 
 **What it connects to:** Azure Key Vault (`claim-ai-kv`)
 
@@ -38,7 +38,7 @@ Connection details (passwords, URLs, keys) are loaded in `app/config.py`, which 
 
 **How to use it:**
 ```python
-from app.secrets import get_keyvault_secret
+from app.connectors.secrets import get_keyvault_secret
 
 value = get_keyvault_secret("database-url")
 ```
@@ -47,7 +47,7 @@ In normal app code, use `from app.config import settings` to read values. Only i
 
 ---
 
-## `app/database.py` — PostgreSQL
+## `app/connectors/db.py` — PostgreSQL
 
 **What it connects to:** PostgreSQL (Azure PostgreSQL in production)
 
@@ -58,18 +58,18 @@ In normal app code, use `from app.config import settings` to read values. Only i
 - `get_sync_connection()` — a plain connection for scripts and one-off migrations
 
 **What does not belong here:**
-- Table/model definitions (those go in `schema.py`)
+- Table/model definitions (those go in `api/schemas/`)
 - Queries or route handlers
 - Loading passwords or connection strings from Key Vault
 
 **How to use it:**
 ```python
-from app.database import get_db, Base, engine, get_sync_connection
+from app.connectors.db import get_db, Base, engine, get_sync_connection
 ```
 
 ---
 
-## `app/storage.py` — Azure Blob Storage
+## `app/connectors/storage.py` — Azure Blob Storage
 
 **What it connects to:** Azure Blob Storage (file storage in Azure)
 
@@ -86,14 +86,14 @@ from app.database import get_db, Base, engine, get_sync_connection
 
 **How to use it:**
 ```python
-from app.storage import upload_image, get_blob_service_client, close_blob_service_client
+from app.connectors.storage import upload_image, get_blob_service_client, close_blob_service_client
 
 await upload_image("path/to/blob", data, content_type="image/jpeg")
 ```
 
 ---
 
-## `app/chromadb_store.py` — ChromaDB
+## `app/connectors/chromadb_store.py` — ChromaDB
 
 **What it connects to:** ChromaDB (either a running server or local storage on disk)
 
@@ -109,14 +109,14 @@ await upload_image("path/to/blob", data, content_type="image/jpeg")
 
 **How to use it:**
 ```python
-from app.chromadb_store import get_chroma_client, get_collection
+from app.connectors.chromadb_store import get_chroma_client, get_collection
 
 collection = get_collection()
 ```
 
 ---
 
-## `app/foundry.py` — Azure AI Foundry
+## `app/connectors/foundry.py` — Azure AI Foundry
 
 **What it connects to:** Azure AI Foundry — both language models used by the app live here.
 
@@ -146,7 +146,7 @@ In **australiaeast**, Claude Opus cannot be deployed directly (regional SKU limi
 
 **How to use it:**
 ```python
-from app.foundry import (
+from app.connectors.foundry import (
     get_gpt_client,
     get_gpt_deployment,
     create_claude_response,
@@ -176,7 +176,7 @@ print(claude_response.model)  # underlying model the router picked
 
 ## `app/config.py` — Settings (not a connection file)
 
-**What it does:** Loads all settings from Key Vault (through `secrets.py`) and environment variables, then exposes them as `settings`.
+**What it does:** Loads all settings from Key Vault (through `app/connectors/secrets.py`) and environment variables, then exposes them as `settings`.
 
 Connection files read from `settings`. Routes and services import from the connection files.
 
@@ -184,8 +184,8 @@ Connection files read from `settings`. Routes and services import from the conne
 
 ## Rules for new code
 
-- One outside service = one connection file.
+- One outside service = one connection file in `app/connectors/`.
 - All LLM calls go through `foundry.py` — GPT 5.5 direct, Claude Opus via model-router in australiaeast.
 - Do not create Azure clients in routers, services, or scripts — import from the right connection file instead.
 - Do not read from Key Vault anywhere except `secrets.py`.
-- Adding a new outside service? Create a new dedicated connection file using the same pattern.
+- Adding a new outside service? Create a new dedicated connection file in `app/connectors/` using the same pattern.
