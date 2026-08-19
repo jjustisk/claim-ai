@@ -21,10 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import dotenv_values
 
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
-
-from app.secrets import env_var_to_secret_name, get_key_vault_name, get_key_vault_url
+from app.secrets import (
+    create_provisioning_secret_client,
+    env_var_to_secret_name,
+    get_key_vault_name,
+    get_key_vault_url,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INFRA_DIR = REPO_ROOT / "infra"
@@ -319,7 +321,7 @@ def seed_secrets(*, vault_name: str, env_file: Path, dry_run: bool) -> None:
     client = None
     if not dry_run:
         vault_url = get_key_vault_url() if vault_name == get_key_vault_name() else f"https://{vault_name}.vault.azure.net/"
-        client = SecretClient(vault_url=vault_url, credential=DefaultAzureCredential())
+        client = create_provisioning_secret_client(vault_url)
         print(f"Seeding vault: {vault_url}")
 
     for env_var, value in env_values.items():

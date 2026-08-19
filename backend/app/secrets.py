@@ -20,11 +20,14 @@ VAULT_SECRET_FIELDS: dict[str, str] = {
     "azure-storage-images-container-name": "azure_storage_images_container_name",
     "azure-storage-videos-container-name": "azure_storage_videos_container_name",
     "azure-storage-pds-policies-container-name": "azure_storage_pds_policies_container_name",
-    "openai-api-key": "openai_api_key",
-    "anthropic-api-key": "anthropic_api_key",
     "pinecone-api-key": "pinecone_api_key",
     "pinecone-environment": "pinecone_environment",
     "azure-communication-connection-string": "azure_communication_connection_string",
+    "azure-ai-project-endpoint": "azure_ai_project_endpoint",
+    "azure-ai-services-endpoint": "azure_ai_services_endpoint",
+    "foundry-gpt-deployment": "foundry_gpt_deployment",
+    "foundry-router-deployment": "foundry_router_deployment",
+    "foundry-claude-deployment": "foundry_claude_deployment",
 }
 
 FIELD_VAULT_SECRETS: dict[str, str] = {v: k for k, v in VAULT_SECRET_FIELDS.items()}
@@ -37,11 +40,14 @@ ENV_VAULT_SECRETS: dict[str, str] = {
     "AZURE_STORAGE_IMAGES_CONTAINER_NAME": "azure-storage-images-container-name",
     "AZURE_STORAGE_VIDEOS_CONTAINER_NAME": "azure-storage-videos-container-name",
     "AZURE_STORAGE_PDS_POLICIES_CONTAINER_NAME": "azure-storage-pds-policies-container-name",
-    "OPENAI_API_KEY": "openai-api-key",
-    "ANTHROPIC_API_KEY": "anthropic-api-key",
     "PINECONE_API_KEY": "pinecone-api-key",
     "PINECONE_ENVIRONMENT": "pinecone-environment",
     "AZURE_COMMUNICATION_CONNECTION_STRING": "azure-communication-connection-string",
+    "AZURE_AI_PROJECT_ENDPOINT": "azure-ai-project-endpoint",
+    "AZURE_AI_SERVICES_ENDPOINT": "azure-ai-services-endpoint",
+    "FOUNDRY_GPT_DEPLOYMENT": "foundry-gpt-deployment",
+    "FOUNDRY_ROUTER_DEPLOYMENT": "foundry-router-deployment",
+    "FOUNDRY_CLAUDE_DEPLOYMENT": "foundry-claude-deployment",
     "AZURE_KEY_VAULT_URL": "azure-key-vault-url",
     "AZURE_TENANT_ID": "azure-tenant-id",
     "AZURE_CLIENT_ID": "azure-client-id",
@@ -108,3 +114,10 @@ def get_keyvault_secret(secret_name: str) -> str | None:
         return secret.value
     except ResourceNotFoundError:
         return None
+
+
+def create_provisioning_secret_client(vault_url: str) -> SecretClient:
+    """Return a SecretClient for admin/provisioning tasks (e.g. seeding secrets)."""
+    from azure.identity import DefaultAzureCredential
+
+    return SecretClient(vault_url=vault_url, credential=DefaultAzureCredential())

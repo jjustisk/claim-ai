@@ -7,20 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import psycopg
-from sqlalchemy.engine.url import make_url
-from app.config import settings
 from app.claim_reference import generate_claim_reference
+from app.database import get_sync_connection
 
-url = make_url(settings.database_url)
-conn = psycopg.connect(
-    host=url.host,
-    port=url.port,
-    dbname=url.database,
-    user=url.username,
-    password=url.password,
-    sslmode=url.query.get("sslmode", "require"),
-)
+conn = get_sync_connection()
 conn.autocommit = False
 cur = conn.cursor()
 

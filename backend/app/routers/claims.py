@@ -1,14 +1,12 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from azure.storage.blob.aio import BlobServiceClient
-from azure.storage.blob import ContentSettings
 from app.database import get_db
 from app.dependencies import require_claimant
 from app.schema import Claim, ClaimDocument, ClaimStatus
-from app.config import settings
 from app.sanitization import sanitize_free_text
 from app.claim_reference import generate_claim_reference
+from app.storage import upload_image
 
 router = APIRouter(prefix="/claims", tags=["claims"])
 
@@ -35,9 +33,6 @@ async def submit_claim(
     db.add(claim)
     await db.flush()
 
-    blob_service = BlobServiceClient.from_connection_string(settings.azure_storage_connection_string)
-    container_client = blob_service.get_container_client(settings.azure_storage_images_container_name)
-
     for file in files:
         if file.content_type not in ALLOWED_TYPES:
             raise HTTPException(400, f"Unsupported file type: {file.content_type}")
@@ -47,11 +42,11 @@ async def submit_claim(
             raise HTTPException(400, f"File too large: {file.filename}")
 
         blob_name = f"claim-{claim.claim_id}/{uuid.uuid4()}-{file.filename}"
-        await container_client.upload_blob(
-            name=blob_name,
-            data=contents,
+        await upload_image(
+            blob_name,
+            contents,
+            content_type=file.content_type,
             overwrite=False,
-            content_settings=ContentSettings(content_type=file.content_type),
         )
 
         doc = ClaimDocument(

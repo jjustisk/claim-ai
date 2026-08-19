@@ -26,12 +26,31 @@ class Settings(BaseSettings):
     database_url: str = ""
     jwt_secret_key: str = ""
     azure_storage_connection_string: str = ""
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
     pinecone_api_key: str = ""
     azure_communication_connection_string: str = ""
 
+    azure_ai_project_endpoint: str = ""
+    azure_ai_services_endpoint: str = ""
+    foundry_gpt_deployment: str = "gpt-5.5"
+    foundry_router_deployment: str = "model-router"
+    foundry_claude_deployment: str = "model-router"
+
     model_config = {"env_file": "../.env", "extra": "ignore"}
+
+
+FOUNDRY_VAULT_SECRET_FIELDS: dict[str, str] = {
+    "azure-ai-project-endpoint": "azure_ai_project_endpoint",
+    "azure-ai-services-endpoint": "azure_ai_services_endpoint",
+    "foundry-gpt-deployment": "foundry_gpt_deployment",
+    "foundry-router-deployment": "foundry_router_deployment",
+    "foundry-claude-deployment": "foundry_claude_deployment",
+}
+
+
+def _vault_fields_for_mode() -> dict[str, str]:
+    if os.getenv("CLAIM_AI_SETTINGS_MODE") == "foundry":
+        return FOUNDRY_VAULT_SECRET_FIELDS
+    return VAULT_SECRET_FIELDS
 
 
 def load_settings() -> Settings:
@@ -44,14 +63,27 @@ def load_settings() -> Settings:
             )
         return settings
 
+    if (
+        os.getenv("CLAIM_AI_SETTINGS_MODE") == "foundry"
+        and settings.azure_ai_project_endpoint
+    ):
+        return settings
+
     updates: dict[str, str] = {}
     missing: list[str] = []
+    vault_fields = _vault_fields_for_mode()
 
-    for secret_name, field_name in VAULT_SECRET_FIELDS.items():
+    for secret_name, field_name in vault_fields.items():
         value = get_keyvault_secret(secret_name)
         if value:
             updates[field_name] = value
         elif field_name == "database_url":
+            missing.append(secret_name)
+        elif (
+            os.getenv("CLAIM_AI_SETTINGS_MODE") == "foundry"
+            and field_name == "azure_ai_project_endpoint"
+            and not settings.azure_ai_project_endpoint
+        ):
             missing.append(secret_name)
 
     if missing:

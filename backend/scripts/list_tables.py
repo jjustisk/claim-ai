@@ -3,9 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import psycopg
-from sqlalchemy.engine.url import make_url
-from app.config import settings
+from app.database import get_sync_connection
 
 RELATIONS_SQL = """
 SELECT
@@ -42,15 +40,7 @@ def print_psql_relations(rows: list[tuple[str, str, str, str]]) -> None:
     print(f"({len(rows)} rows)")
 
 
-url = make_url(settings.database_url)
-conn = psycopg.connect(
-    host=url.host,
-    port=url.port,
-    dbname=url.database,
-    user=url.username,
-    password=url.password,
-    sslmode=url.query.get("sslmode", "require"),
-)
+conn = get_sync_connection()
 cur = conn.cursor()
 cur.execute(RELATIONS_SQL)
 rows = cur.fetchall()
