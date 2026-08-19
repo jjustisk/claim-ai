@@ -1,3 +1,5 @@
+"""ChromaDB connection and collection access."""
+
 from pathlib import Path
 
 import chromadb
