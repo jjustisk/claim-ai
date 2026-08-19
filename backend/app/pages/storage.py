@@ -1,105 +1,21 @@
-"""Local web UI for testing Azure Blob Storage uploads.
+"""HTML page for testing Azure Blob Storage uploads.
 
-Supports images, videos, and policy PDFs across three containers.
-
-Run from backend/:
-    python scripts/test_storage.py
-
-Then open http://127.0.0.1:8765
+Mounted on the main app at /ui/storage. Temporary test UI — Vue will not use this.
 """
 
-import mimetypes
-import sys
-import uuid
-from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
-import uvicorn
 
-from app.config import settings
-from app.storage import (
-    close_blob_service_client,
-    list_images,
-    list_pds_policies,
-    list_videos,
-    upload_image,
-    upload_pds_policy,
-    upload_video,
+from app.services.storage_service import (
+    connection_string_configured,
+    containers_public_json,
+    list_container_blobs as list_blobs,
+    upload_to_container as upload_blob,
 )
 
-IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"}
-VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo"}
-PDF_TYPES = {"application/pdf"}
-
-
-@dataclass(frozen=True)
-class ContainerConfig:
-    key: str
-    label: str
-    container_name: str
-    allowed_types: frozenset[str]
-    accept: str
-    drop_label: str
-    hint: str
-    empty_label: str
-    list_fn: Callable[[], Awaitable[list[str]]]
-    upload_fn: Callable[..., Awaitable[str]]
-
-
-CONTAINERS: dict[str, ContainerConfig] = {
-    "images": ContainerConfig(
-        key="images",
-        label="Images",
-        container_name=settings.azure_storage_images_container_name,
-        allowed_types=frozenset(IMAGE_TYPES),
-        accept="image/*",
-        drop_label="Drag & drop an image here",
-        hint="JPEG, PNG, GIF, WebP, BMP",
-        empty_label="No images yet.",
-        list_fn=list_images,
-        upload_fn=upload_image,
-    ),
-    "videos": ContainerConfig(
-        key="videos",
-        label="Videos",
-        container_name=settings.azure_storage_videos_container_name,
-        allowed_types=frozenset(VIDEO_TYPES),
-        accept="video/*",
-        drop_label="Drag & drop a video here",
-        hint="MP4, WebM, MOV, AVI",
-        empty_label="No videos yet.",
-        list_fn=list_videos,
-        upload_fn=upload_video,
-    ),
-    "pds-policies": ContainerConfig(
-        key="pds-policies",
-        label="PDS Policies",
-        container_name=settings.azure_storage_pds_policies_container_name,
-        allowed_types=frozenset(PDF_TYPES),
-        accept="application/pdf,.pdf",
-        drop_label="Drag & drop a policy PDF here",
-        hint="PDF only",
-        empty_label="No policy PDFs yet.",
-        list_fn=list_pds_policies,
-        upload_fn=upload_pds_policy,
-    ),
-}
-
-
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    yield
-    await close_blob_service_client()
-
-
-app = FastAPI(title="Storage Test UI", lifespan=lifespan)
+router = APIRouter(prefix="/ui/storage", include_in_schema=False)
 
 
 INDEX_HTML = """<!DOCTYPE html>
@@ -411,7 +327,7 @@ INDEX_HTML = """<!DOCTYPE html>
       form.append("file", selectedFile);
 
       try {
-        const res = await fetch(`/api/${activeKey}/upload`, { method: "POST", body: form });
+        const res = await fetch(`/ui/storage/api/${activeKey}/upload`, { method: "POST", body: form });
         const data = await res.json();
         if (!res.ok) throw new Error(errorMessage(data, "Upload failed"));
         setStatus(
@@ -432,7 +348,7 @@ INDEX_HTML = """<!DOCTYPE html>
       const config = currentConfig();
       blobList.innerHTML = "<li>Loading…</li>";
       try {
-        const res = await fetch(`/api/${activeKey}/blobs`);
+        const res = await fetch(`/ui/storage/api/${activeKey}/blobs`);
         const data = await res.json();
         if (!res.ok) throw new Error(errorMessage(data, "Could not load blob list"));
         containerNameEl.textContent = data.container;
@@ -460,122 +376,37 @@ INDEX_HTML = """<!DOCTYPE html>
 """
 
 
-def _account_name() -> str:
-    for part in settings.azure_storage_connection_string.split(";"):
-        if part.startswith("AccountName="):
-            return part.split("=", 1)[1]
-    return ""
-
-
-def _blob_url(container_name: str, blob_name: str) -> str:
-    account_name = _account_name()
-    return f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}"
-
-
-def _guess_content_type(
-    filename: str,
-    reported: str | None,
-    allowed_types: frozenset[str],
-) -> str:
-    if reported and reported in allowed_types:
-        return reported
-    guessed, _ = mimetypes.guess_type(filename)
-    return guessed if guessed in allowed_types else "application/octet-stream"
-
-
-def _get_container(key: str) -> ContainerConfig:
-    config = CONTAINERS.get(key)
-    if config is None:
-        raise HTTPException(404, f"Unknown container: {key}")
-    return config
-
-
-def _containers_json() -> str:
-    import json
-
-    payload = {
-        key: {
-            "key": config.key,
-            "label": config.label,
-            "allowed_types": sorted(config.allowed_types),
-            "accept": config.accept,
-            "drop_label": config.drop_label,
-            "hint": config.hint,
-            "empty_label": config.empty_label,
-        }
-        for key, config in CONTAINERS.items()
-    }
-    return json.dumps(payload)
-
-
-def _require_connection_string() -> None:
-    if not settings.azure_storage_connection_string:
-        raise HTTPException(503, "AZURE_STORAGE_CONNECTION_STRING is not set")
-
-
-@app.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 def index() -> str:
-    return INDEX_HTML.replace("__CONTAINERS_JSON__", _containers_json())
+    return INDEX_HTML.replace("__CONTAINERS_JSON__", containers_public_json())
 
 
-@app.get("/api/{container_key}/blobs")
-async def list_container_blobs(container_key: str) -> dict[str, Any]:
-    _require_connection_string()
-    config = _get_container(container_key)
+@router.get("/api/{container_key}/blobs")
+async def blobs(container_key: str) -> dict[str, Any]:
+    if not connection_string_configured():
+        raise HTTPException(503, "AZURE_STORAGE_CONNECTION_STRING is not set")
     try:
-        names = await config.list_fn()
+        return await list_blobs(container_key)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"Could not list blobs: {exc}") from exc
-    return {
-        "container": config.container_name,
-        "items": [
-            {"name": name, "url": _blob_url(config.container_name, name)} for name in names
-        ],
-    }
 
 
-@app.post("/api/{container_key}/upload")
-async def upload_to_container(
-    container_key: str,
-    file: UploadFile = File(...),
-) -> JSONResponse:
-    _require_connection_string()
-    config = _get_container(container_key)
-
-    default_name = {
-        "images": "image.jpg",
-        "videos": "video.mp4",
-        "pds-policies": "document.pdf",
-    }[container_key]
-
-    content_type = _guess_content_type(
-        file.filename or default_name,
-        file.content_type,
-        config.allowed_types,
-    )
-    if content_type not in config.allowed_types:
-        raise HTTPException(
-            400,
-            f"Unsupported file type. Allowed: {', '.join(sorted(config.allowed_types))}",
-        )
-
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Empty file")
-
-    original = Path(file.filename or default_name).name
-    blob_name = f"test-uploads/{uuid.uuid4().hex}-{original}"
-
+@router.post("/api/{container_key}/upload")
+async def upload(container_key: str, file: UploadFile = File(...)) -> JSONResponse:
+    if not connection_string_configured():
+        raise HTTPException(503, "AZURE_STORAGE_CONNECTION_STRING is not set")
     try:
-        url = await config.upload_fn(blob_name, data, content_type=content_type)
+        result = await upload_blob(
+            container_key,
+            file.filename,
+            file.content_type,
+            await file.read(),
+        )
+    except ValueError as exc:
+        status = 404 if str(exc).startswith("Unknown container") else 400
+        raise HTTPException(status, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"Upload failed: {exc}") from exc
-
-    return JSONResponse({"blob_name": blob_name, "url": url, "container": config.container_name})
-
-
-if __name__ == "__main__":
-    print("Storage test UI → http://127.0.0.1:8765")
-    for config in CONTAINERS.values():
-        print(f"  {config.label}: {config.container_name}")
-    uvicorn.run(app, host="127.0.0.1", port=8765)
+    return JSONResponse(result)

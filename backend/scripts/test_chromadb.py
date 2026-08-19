@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.chromadb_store import get_chroma_client, get_collection, reset_chroma_client
+from app.connectors.chromadb_store import get_chroma_client, get_collection, reset_chroma_client
 from app.config import settings
 
 TEST_DOC = "ChromaDB is working for Claim AI."

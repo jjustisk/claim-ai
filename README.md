@@ -19,14 +19,13 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Once running, check it's alive:
+Once running:
 
-```bash
-curl http://127.0.0.1:8000/health
-# Expected: {"status":"ok"}
-```
+- http://127.0.0.1:8000/ui — temporary HTML test UI (claimant + assessor)
+- http://127.0.0.1:8000/docs — OpenAPI for the JSON API Vue will use (`/api/...`)
+- http://127.0.0.1:8000/health — liveness check
 
-Interactive API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+The HTML under `/ui` is throwaway. New product behaviour belongs in `app/api` and `app/services`.
 
 ## Environment variables
 

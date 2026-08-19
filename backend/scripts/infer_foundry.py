@@ -62,7 +62,7 @@ def _choose_model() -> str | None:
 
 def _lazy_import_foundry() -> dict[str, Any]:
     """Import Foundry clients only after the user picks a model."""
-    from app.foundry import (
+    from app.connectors.foundry import (
         CLAUDE_MODEL,
         GPT_MODEL,
         get_claude_client,
@@ -249,7 +249,7 @@ def main() -> int:
                 _run_claude_session(foundry)
     finally:
         if foundry is not None:
-            from app.foundry import reset_foundry_clients
+            from app.connectors.foundry import reset_foundry_clients
 
             reset_foundry_clients()
 

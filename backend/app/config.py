@@ -1,7 +1,7 @@
 import os
 from pydantic_settings import BaseSettings
 
-from app.secrets import (
+from app.connectors.secrets import (
     VAULT_SECRET_FIELDS,
     get_key_vault_url,
     get_keyvault_secret,
@@ -35,7 +35,13 @@ class Settings(BaseSettings):
     foundry_router_deployment: str = "model-router"
     foundry_claude_deployment: str = "model-router"
 
+    # Vue (Vite) and other local frontends. Comma-separated.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     model_config = {"env_file": "../.env", "extra": "ignore"}
+
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 FOUNDRY_VAULT_SECRET_FIELDS: dict[str, str] = {
