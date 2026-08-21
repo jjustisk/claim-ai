@@ -35,5 +35,8 @@ Thumbs.db
 data/chroma/
 backend/data/chroma/
 
+# Local pgAdmin Docker setup
+backend/pgAdmin/
+
 # Logs
 *.log

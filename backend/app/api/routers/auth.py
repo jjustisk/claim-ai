@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_current_user
 from app.api.schemas.responses import CurrentUser, TokenResponse
 from app.connectors.db import get_db
-from app.services.auth_service import InvalidCredentials, authenticate
+from app.services.auth_service import InvalidCredentials, authenticate, get_account_profile
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -28,8 +28,4 @@ async def login(
 
 @router.get("/me", response_model=CurrentUser)
 def me(user: dict = Depends(get_current_user)) -> CurrentUser:
-    return CurrentUser(
-        id=int(user["sub"]),
-        role=str(user["role"]),
-        email=str(user["email"]),
-    )
+    return CurrentUser(**get_account_profile(user))

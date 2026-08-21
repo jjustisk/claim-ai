@@ -7,11 +7,15 @@ in pages/ also uses these helpers until Vue replaces it.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import quote, unquote
+
+from fastapi.responses import Response
 
 from app.api.schemas import ClaimStatus
 from app.connectors.db import get_sync_connection
-from app.connectors.storage import download_image
+from app.connectors.storage import download_stored_blob
 from app.services.sanitization_service import sanitize_free_text
 
 STATUS_LABELS = {
@@ -38,9 +42,9 @@ def claim_counts() -> dict[str, int]:
     conn = get_sync_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT status, COUNT(*) FROM claim GROUP BY status")
+            cur.execute("SELECT status, COUNT(*) FROM claim WHERE status <> 'draft' GROUP BY status")
             counts = {row[0]: int(row[1]) for row in cur.fetchall()}
-            cur.execute("SELECT COUNT(*) FROM claim")
+            cur.execute("SELECT COUNT(*) FROM claim WHERE status <> 'draft'")
             counts["all"] = int(cur.fetchone()[0])
             return counts
     finally:
@@ -66,9 +70,13 @@ def list_claims(status: str | None = None) -> list[dict[str, Any]]:
         JOIN policy p ON p.policy_id = c.policy_id
     """
     params: tuple[Any, ...] = ()
+    if status == ClaimStatus.DRAFT.value:
+        return []
     if status:
         sql += " WHERE c.status = %s"
         params = (status,)
+    else:
+        sql += " WHERE c.status <> 'draft'"
     sql += " ORDER BY c.submission_date DESC NULLS LAST, c.claim_id DESC"
 
     conn = get_sync_connection()
@@ -96,6 +104,31 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
                     c.priority_level,
                     c.fraud_risk_score,
                     c.cost,
+                    c.claim_type,
+                    c.incident_date,
+                    c.incident_time,
+                    c.incident_location,
+                    c.incident_description,
+                    c.loss_description,
+                    c.estimated_value,
+                    c.property_damaged,
+                    c.claimant_name,
+                    c.claimant_email,
+                    c.claimant_phone,
+                    c.others_involved,
+                    c.other_party_name,
+                    c.other_party_phone,
+                    c.other_party_email,
+                    c.other_party_address,
+                    c.other_party_vehicle_reg,
+                    c.other_party_insurer,
+                    c.police_involved,
+                    c.police_report_number,
+                    c.police_station,
+                    c.additional_comments,
+                    c.declaration_accepted,
+                    c.declaration_name,
+                    c.declaration_date,
                     cu.customer_id,
                     cu.name AS customer_name,
                     cu.email AS customer_email,
@@ -230,13 +263,39 @@ def get_document(doc_id: int) -> dict[str, Any] | None:
         conn.close()
 
 
-async def download_claim_document(doc_id: int) -> tuple[bytes, str, str] | None:
-    from pathlib import Path
+def evidence_filename(file_url: str, doc_id: int) -> str:
+    name = unquote(str(file_url or "").replace("\\", "/").split("/")[-1])
+    match = re.match(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(.+)",
+        name,
+        re.I,
+    )
+    return match.group(1) if match else (name or f"document-{doc_id}")
 
+
+def evidence_download_response(data: bytes, filename: str, media_type: str | None) -> Response:
+    safe = filename.replace("\\", "_").replace('"', "").replace("\r", "").replace("\n", "")
+    ascii_name = safe.encode("ascii", "replace").decode("ascii") or "document"
+    return Response(
+        content=data,
+        media_type=media_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+async def download_claim_document(doc_id: int) -> tuple[bytes, str, str] | None:
     doc = get_document(doc_id)
     if doc is None or not doc.get("file_url"):
         return None
-    data = await download_image(str(doc["file_url"]))
-    filename = Path(str(doc["file_url"])).name or f"document-{doc_id}"
+    stored = str(doc["file_url"])
+    data = await download_stored_blob(stored)
+    filename = evidence_filename(stored, doc_id)
     media_type = str(doc["file_type"] or "application/octet-stream")
     return data, filename, media_type

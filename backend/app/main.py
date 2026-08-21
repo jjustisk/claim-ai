@@ -13,12 +13,14 @@ from app.connectors.db import Base, engine
 from app.connectors.storage import close_blob_service_client
 from app.pages import portal as portal_pages
 from app.pages import storage as storage_pages
+from app.services.claim_service import ensure_claim_form_columns
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    ensure_claim_form_columns()
     yield
     await close_blob_service_client()
 

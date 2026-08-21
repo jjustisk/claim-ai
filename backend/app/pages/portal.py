@@ -7,13 +7,12 @@ routes. Until then, pages call the same services the JSON API uses.
 from __future__ import annotations
 
 import html
-from datetime import datetime
-from pathlib import Path
+from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.db import get_db
@@ -23,7 +22,10 @@ from app.services.assessor_service import (
     ReviewError,
     claim_counts,
     download_claim_document,
+    evidence_download_response,
+    evidence_filename,
     get_claim,
+    get_document,
     list_claims,
     save_review,
 )
@@ -32,7 +34,16 @@ from app.services.auth_service import (
     authenticate,
     session_from_token,
 )
-from app.services.claim_service import ClaimSubmitError, list_policies, submit_claim
+from app.services.claim_service import (
+    CLAIM_TYPES,
+    ClaimSubmitError,
+    delete_customer_draft,
+    get_customer_claim,
+    get_customer_profile,
+    list_customer_claims,
+    list_policies,
+    submit_claim,
+)
 
 COOKIE_TOKEN = "claim_ai_token"
 COOKIE_EMAIL = "claim_ai_email"
@@ -41,7 +52,7 @@ router = APIRouter(prefix="/ui", include_in_schema=False)
 
 
 def home_path_for_role(role: str) -> str:
-    return "/ui/dashboard" if role == "assessor" else "/ui/claim"
+    return "/ui/dashboard" if role == "assessor" else "/ui/home"
 
 
 def _fmt_dt(value: Any) -> str:
@@ -58,6 +69,60 @@ def _fmt_money(value: Any) -> str:
     return f"{value:,.2f}"
 
 
+def _fmt_date(value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y")
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    return str(value)
+
+
+def _fmt_yes_no(value: Any) -> str:
+    if value is True:
+        return "Yes"
+    if value is False:
+        return "No"
+    return "—"
+
+
+def _date_input(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value)
+    return text[:10]
+
+
+def _attr(value: Any) -> str:
+    if value is None:
+        return ""
+    return html.escape(str(value), quote=True)
+
+
+def _claim_type_label(value: Any) -> str:
+    labels = dict(CLAIM_TYPES)
+    if value in labels:
+        return labels[str(value)]
+    return str(value or "—")
+
+
+def _radio_row(name: str, current: Any, *, required: bool = False) -> str:
+    req = "required" if required else ""
+    yes = "checked" if current is True else ""
+    no = "checked" if current is False else ""
+    return f"""
+      <div class="choice">
+        <label><input type="radio" name="{name}" value="yes" {yes} {req}> Yes</label>
+        <label><input type="radio" name="{name}" value="no" {no}> No</label>
+      </div>
+    """
+
+
 def _styles() -> str:
     return """
 :root {
@@ -65,7 +130,7 @@ def _styles() -> str:
   --bg: #f5f5f5; --surface: #ffffff; --text: #242424; --muted: #616161;
   --stroke: #d1d1d1; --stroke-strong: #8a8886;
   --danger: #c50f1f; --danger-bg: #fde7e9; --success: #0e700e; --success-bg: #dff6dd;
-  --info-bg: #ebf3fc; --warn: #8a6116; --warn-bg: #fff4ce; --nav: #201f1e;
+  --info-bg: #ebf3fc; --warn: #8a6116; --warn-bg: #fff4ce; --nav: #fafafa;
   --header-h: 48px; --rail-w: 228px; --focus: 0 0 0 2px #fff, 0 0 0 4px var(--brand);
 }
 * { box-sizing: border-box; }
@@ -109,8 +174,38 @@ a:hover { text-decoration: underline; }
 }
 .btn-primary { background: var(--brand); color: #fff; }
 .btn-primary:hover { background: var(--brand-hover); }
-.btn-secondary { background: var(--surface); color: var(--text); border-color: var(--stroke-strong); }
-.btn-secondary:hover { background: #f3f2f1; }
+.btn-danger { background: var(--surface); color: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger-bg); }
+.btn-link {
+  min-width: 0; height: auto; padding: 0; background: none; border: 0;
+  color: var(--danger); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn-link:hover { text-decoration: underline; }
+.row-actions { display: flex; gap: 12px; align-items: center; }
+.progress {
+  height: 6px; background: #edebe9; border-radius: 3px; overflow: hidden; width: 88px;
+}
+.progress > span { display: block; height: 100%; background: var(--brand); }
+.resume {
+  display: flex; justify-content: space-between; gap: 16px; align-items: center;
+  background: var(--info-bg); border: 1px solid #c7e0f4; border-radius: 4px;
+  padding: 20px 24px; margin-bottom: 16px;
+}
+.resume h2 { margin: 0 0 4px; font-size: 16px; }
+.resume p { margin: 0; color: var(--muted); font-size: 13px; }
+.tip { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+.empty-hero { text-align: center; padding: 28px 16px; }
+.empty-hero .mark {
+  width: 48px; height: 48px; margin: 0 auto 12px; border-radius: 12px;
+  background: var(--info-bg); color: var(--brand); display: grid; place-items: center;
+  font-size: 22px; font-weight: 700;
+}
+.confetti { position: relative; overflow: hidden; }
+.confetti:after {
+  content: "✦  ✧  ★  ✦"; letter-spacing: 18px;
+  position: absolute; right: 16px; top: 12px; color: var(--brand); opacity: .35;
+  font-size: 14px; pointer-events: none;
+}
 .login-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .banner { display: flex; gap: 12px; padding: 11px 12px; margin-bottom: 20px; border-radius: 4px; font-size: 14px; line-height: 20px; }
 .banner:before { content: ""; width: 4px; border-radius: 2px; flex-shrink: 0; }
@@ -134,14 +229,24 @@ a:hover { text-decoration: underline; }
   display: grid; place-items: center; font-size: 12px; font-weight: 600;
 }
 .layout { display: flex; min-height: calc(100vh - var(--header-h)); }
-.rail { width: var(--rail-w); background: var(--nav); color: #fff; padding: 8px 0; flex-shrink: 0; }
-.rail a { display: flex; color: #fff; text-decoration: none; padding: 8px 16px; font-size: 14px; border-left: 3px solid transparent; }
-.rail a:hover { background: #323130; text-decoration: none; }
-.rail a.active { background: #3b3a39; border-left-color: var(--brand); }
+.rail { width: var(--rail-w); background: var(--nav); color: var(--text); padding: 8px 0; flex-shrink: 0; border-right: 1px solid var(--stroke); }
+.rail a { display: flex; color: var(--text); text-decoration: none; padding: 8px 16px; font-size: 14px; border-left: 3px solid transparent; }
+.rail a:hover { background: #f3f2f1; text-decoration: none; }
+.rail a.active { background: var(--info-bg); border-left-color: var(--brand); color: var(--brand); font-weight: 600; }
 .main { flex: 1; padding: 20px 28px 48px; max-width: 1180px; }
 .crumbs { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 .page-title { margin: 0 0 4px; font-size: 28px; font-weight: 600; }
 .page-sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.page-head .page-sub { margin-bottom: 0; }
+.hero {
+  background: var(--surface); border: 1px solid var(--stroke); border-radius: 4px;
+  padding: 28px 24px; margin-bottom: 16px;
+}
+.hero h1 { margin: 0 0 8px; font-size: 28px; font-weight: 600; }
+.hero p { margin: 0 0 16px; color: var(--muted); font-size: 15px; line-height: 22px; max-width: 42em; }
+.topbar .btn { text-decoration: none; height: 28px; min-width: 0; padding: 0 12px; font-size: 13px; }
+.topbar .btn:hover { text-decoration: none; }
 .card { background: var(--surface); border: 1px solid var(--stroke); border-radius: 4px; padding: 24px; margin-bottom: 16px; }
 .card h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
 .card .section-help { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
@@ -167,6 +272,7 @@ table.data tbody tr:hover { background: #f3f2f1; }
 .pill-approved { background: var(--success-bg); color: var(--success); }
 .pill-rejected { background: var(--danger-bg); color: var(--danger); }
 .pill-closed { background: #f3f2f1; color: var(--muted); }
+.pill-draft { background: #f3f2f1; color: var(--muted); }
 .dl { display: grid; grid-template-columns: 180px 1fr; gap: 8px 16px; font-size: 14px; }
 .dl dt { color: var(--muted); }
 .dl dd { margin: 0; font-weight: 600; }
@@ -176,11 +282,20 @@ table.data tbody tr:hover { background: #f3f2f1; }
 .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--stroke); }
 .file-drop input[type=file] { height: auto; padding: 8px; }
 .empty { color: var(--muted); font-size: 14px; padding: 12px 0; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.field-span { grid-column: 1 / -1; }
+.choice { display: flex; gap: 18px; align-items: center; min-height: 32px; }
+.choice label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 0; }
+.choice input { width: auto; height: auto; margin: 0; }
+.check-row { display: flex; align-items: flex-start; gap: 10px; }
+.check-row input { width: auto; height: auto; margin-top: 3px; }
+.check-row span { font-size: 14px; line-height: 20px; }
+.req { color: var(--danger); }
 @media (max-width: 800px) {
   .rail { display: none; }
   .login-card { padding: 28px 22px; }
   .main { padding: 16px; }
-  .dl, .result-grid { grid-template-columns: 1fr; }
+  .dl, .result-grid, .form-grid { grid-template-columns: 1fr; }
 }
 """
 
@@ -210,17 +325,80 @@ def _page(title: str, body: str) -> HTMLResponse:
     )
 
 
+def _first_name(profile: dict[str, Any] | None, email: str) -> str:
+    name = str((profile or {}).get("name") or "").strip()
+    if name:
+        return name.split()[0]
+    local = email.split("@")[0].strip()
+    return local[:1].upper() + local[1:] if local else "there"
+
+
+def _day_greeting() -> str:
+    hour = datetime.now().hour
+    if hour < 12:
+        return "Good morning"
+    if hour < 17:
+        return "Good afternoon"
+    return "Good evening"
+
+
+def _relative_time(value: Any) -> str:
+    if not isinstance(value, datetime):
+        return ""
+    stamp = value.replace(tzinfo=None)
+    minutes = int((datetime.utcnow() - stamp).total_seconds() // 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hr ago"
+    days = hours // 24
+    if days == 1:
+        return "yesterday"
+    return f"{days} days ago"
+
+
+def _draft_progress(row: dict[str, Any]) -> int:
+    checks = (
+        row.get("claim_type"),
+        row.get("incident_date"),
+        row.get("incident_location"),
+        row.get("incident_description"),
+        row.get("claimant_name"),
+        row.get("claimant_phone"),
+        row.get("others_involved") is not None,
+    )
+    filled = sum(1 for item in checks if item)
+    return int(round(100 * filled / len(checks)))
+
+
+_HOME_TIPS = (
+    "You can submit even if you do not have every receipt yet.",
+    "A couple of photos of the damage helps an assessor get started faster.",
+    "Save a draft anytime. Nothing goes to an assessor until you submit.",
+    "If someone else was involved, their registration number is especially useful.",
+)
+
+
 def _portal_chrome(email: str, role: str, inner: str, active: str) -> str:
     initial = html.escape((email[:1] or "?").upper())
     safe_email = html.escape(email)
+    extra_actions = ""
     if role == "assessor":
         nav = f'<a class="{"active" if active == "dashboard" else ""}" href="/ui/dashboard">Dashboard</a>'
     else:
-        nav = f'<a class="{"active" if active == "claim" else ""}" href="/ui/claim">Submit a claim</a>'
+        nav = (
+            f'<a class="{"active" if active == "home" else ""}" href="/ui/home">Home</a>'
+            f'<a class="{"active" if active == "claim" else ""}" href="/ui/claim">Make a claim</a>'
+        )
+        extra_actions = '<a class="btn btn-primary" href="/ui/claim">Make a claim</a>'
     return f"""
 <header class="topbar">
   <div class="product">{_brand_mark()} Claim AI</div>
   <div class="spacer"></div>
+  {extra_actions}
   <div class="user-chip">
     <div class="avatar" aria-hidden="true">{initial}</div>
     <span>{safe_email}</span>
@@ -235,8 +413,9 @@ def _portal_chrome(email: str, role: str, inner: str, active: str) -> str:
 
 
 def _status_pill(status: str) -> str:
-    label = STATUS_LABELS.get(status, status.replace("_", " ").title())
-    css = status if status in STATUS_LABELS else "closed"
+    labels = {**STATUS_LABELS, "draft": "Draft"}
+    label = labels.get(status, status.replace("_", " ").title())
+    css = status if status in labels else "closed"
     return f'<span class="pill pill-{html.escape(css)}">{html.escape(label)}</span>'
 
 
@@ -385,13 +564,13 @@ def _claim_detail_view(
     if documents:
         doc_rows = []
         for doc in documents:
-            name = Path(str(doc["file_url"] or "")).name or f"document-{doc['doc_id']}"
+            name = evidence_filename(str(doc["file_url"] or ""), int(doc["doc_id"]))
             doc_rows.append(
                 f"""<tr>
                   <td>{html.escape(name)}</td>
                   <td>{html.escape(str(doc["file_type"] or "—"))}</td>
                   <td>{html.escape(_fmt_dt(doc["upload_date"]))}</td>
-                  <td><a href="/ui/documents/{int(doc["doc_id"])}">Download</a></td>
+                  <td><a href="/ui/documents/{int(doc["doc_id"])}" download="{html.escape(name, quote=True)}">Download</a></td>
                 </tr>"""
             )
         docs_html = f"""
@@ -461,16 +640,60 @@ def _claim_detail_view(
     <p class="page-sub">Claim {claim_id} · {_status_pill(current)}</p>
     {banners}
     <div class="card">
-      <h2>Claim details</h2>
+      <h2>Policy and claimant</h2>
       <dl class="dl">
         <dt>Customer</dt><dd>{html.escape(str(claim["customer_name"]))} ({html.escape(str(claim["customer_email"]))})</dd>
         <dt>Phone</dt><dd>{html.escape(str(claim["customer_phone"] or "—"))}</dd>
         <dt>Policy</dt><dd>{html.escape(str(claim["policy_number"]))} — {html.escape(str(coverage))}</dd>
+        <dt>Claim type</dt><dd>{html.escape(_claim_type_label(claim.get("claim_type")))}</dd>
+        <dt>Contact name</dt><dd>{html.escape(str(claim.get("claimant_name") or "—"))}</dd>
+        <dt>Contact email</dt><dd>{html.escape(str(claim.get("claimant_email") or "—"))}</dd>
+        <dt>Contact phone</dt><dd>{html.escape(str(claim.get("claimant_phone") or "—"))}</dd>
         <dt>Submitted</dt><dd>{html.escape(_fmt_dt(claim["submission_date"]))}</dd>
         <dt>Outcome date</dt><dd>{html.escape(_fmt_dt(claim["outcome_date"]))}</dd>
         <dt>Priority</dt><dd>{html.escape(str(claim["priority_level"] if claim["priority_level"] is not None else 0))}</dd>
         <dt>Fraud score</dt><dd>{html.escape(str(claim["fraud_risk_score"] if claim["fraud_risk_score"] is not None else 0))}</dd>
-        <dt>Cost</dt><dd>{html.escape(_fmt_money(claim["cost"]))}</dd>
+        <dt>Estimated value</dt><dd>{html.escape(_fmt_money(claim.get("estimated_value") if claim.get("estimated_value") is not None else claim.get("cost")))}</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Incident details</h2>
+      <dl class="dl">
+        <dt>Date</dt><dd>{html.escape(_fmt_date(claim.get("incident_date")))}</dd>
+        <dt>Time</dt><dd>{html.escape(str(claim.get("incident_time") or "—"))}</dd>
+        <dt>Location</dt><dd>{html.escape(str(claim.get("incident_location") or "—"))}</dd>
+        <dt>What happened</dt><dd>{html.escape(str(claim.get("incident_description") or "—"))}</dd>
+        <dt>Loss or damage</dt><dd>{html.escape(str(claim.get("loss_description") or "—"))}</dd>
+        <dt>Property damaged</dt><dd>{html.escape(_fmt_yes_no(claim.get("property_damaged")))}</dd>
+        <dt>Additional comments</dt><dd>{html.escape(str(claim.get("additional_comments") or "—"))}</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Other people involved</h2>
+      <dl class="dl">
+        <dt>Anyone else involved</dt><dd>{html.escape(_fmt_yes_no(claim.get("others_involved")))}</dd>
+        <dt>Name</dt><dd>{html.escape(str(claim.get("other_party_name") or "—"))}</dd>
+        <dt>Phone</dt><dd>{html.escape(str(claim.get("other_party_phone") or "—"))}</dd>
+        <dt>Email</dt><dd>{html.escape(str(claim.get("other_party_email") or "—"))}</dd>
+        <dt>Address</dt><dd>{html.escape(str(claim.get("other_party_address") or "—"))}</dd>
+        <dt>Vehicle registration</dt><dd>{html.escape(str(claim.get("other_party_vehicle_reg") or "—"))}</dd>
+        <dt>Insurance company</dt><dd>{html.escape(str(claim.get("other_party_insurer") or "—"))}</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Police / emergency services</h2>
+      <dl class="dl">
+        <dt>Police involved</dt><dd>{html.escape(_fmt_yes_no(claim.get("police_involved")))}</dd>
+        <dt>Report number</dt><dd>{html.escape(str(claim.get("police_report_number") or "—"))}</dd>
+        <dt>Police station</dt><dd>{html.escape(str(claim.get("police_station") or "—"))}</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Declaration</h2>
+      <dl class="dl">
+        <dt>Confirmed accurate</dt><dd>{html.escape(_fmt_yes_no(claim.get("declaration_accepted")))}</dd>
+        <dt>Name</dt><dd>{html.escape(str(claim.get("declaration_name") or "—"))}</dd>
+        <dt>Date</dt><dd>{html.escape(_fmt_date(claim.get("declaration_date")))}</dd>
       </dl>
     </div>
     <div class="card">
@@ -506,18 +729,156 @@ def _claim_detail_view(
     return _page(f"{claim['claim_reference']} | Claim AI", _portal_chrome(email, role, inner, "dashboard"))
 
 
-def _claim_submit_view(
+def _customer_claim_table(
+    rows: list[dict[str, Any]],
+    *,
+    continue_draft: bool,
+    open_id: Any = None,
+) -> str:
+    if not rows:
+        return '<p class="empty">None yet.</p>'
+    body = []
+    for row in rows:
+        claim_id = int(row["claim_id"])
+        reference = html.escape(str(row["claim_reference"]))
+        if continue_draft:
+            ref_cell = f'<a href="/ui/claim?draft_id={claim_id}">{reference}</a>'
+            percent = _draft_progress(row)
+            when = _relative_time(row.get("submission_date"))
+            action = f"""
+              <div class="row-actions">
+                <div class="progress" title="{percent}% complete"><span style="width:{percent}%"></span></div>
+                <a href="/ui/claim?draft_id={claim_id}">Continue</a>
+                <form method="post" action="/ui/drafts/{claim_id}/delete" onsubmit="return confirm('Delete this draft? This cannot be undone.');">
+                  <button class="btn-link" type="submit">Delete</button>
+                </form>
+              </div>
+            """
+            if open_id and int(open_id) == claim_id:
+                action = f"""
+              <div class="row-actions">
+                <div class="progress" title="{percent}% complete"><span style="width:{percent}%"></span></div>
+                <strong>Editing now</strong>
+              </div>
+            """
+            extra = f'<div class="hint">{html.escape(when)}</div>' if when else ""
+            ref_cell = f"{ref_cell}{extra}"
+        else:
+            ref_cell = reference
+            action = "—"
+        body.append(
+            f"""<tr>
+              <td>{ref_cell}</td>
+              <td>{html.escape(str(row.get("policy_number") or "—"))}</td>
+              <td>{html.escape(_claim_type_label(row.get("claim_type")))}</td>
+              <td>{html.escape(_fmt_date(row.get("incident_date")))}</td>
+              <td>{_status_pill(str(row.get("status") or ""))}</td>
+              <td>{action}</td>
+            </tr>"""
+        )
+    return f"""
+    <table class="data">
+      <thead><tr><th>Reference</th><th>Policy</th><th>Type</th><th>Incident date</th><th>Status</th><th></th></tr></thead>
+      <tbody>{''.join(body)}</tbody>
+    </table>
+    """
+
+
+def _claimant_home_view(
     email: str,
     role: str,
+    customer_id: int,
     *,
     error: str | None = None,
     success: dict | None = None,
+    notice: str | None = None,
+) -> HTMLResponse:
+    banners = ""
+    if error:
+        banners += _banner("error", error)
+    if notice:
+        banners += _banner("success", notice)
+    confetti = ""
+    if success and not success.get("deleted"):
+        banners += _banner("success", "Claim submitted. Keep the reference below for follow-up.")
+        banners += f"""
+        <div class="card">
+          <h2>Submission details</h2>
+          <dl class="result-grid">
+            <dt>Claim ID</dt><dd>{html.escape(str(success.get("claim_id", "")))}</dd>
+            <dt>Claim reference</dt><dd>{html.escape(str(success.get("claim_reference", "")))}</dd>
+            <dt>Status</dt><dd>{html.escape(str(success.get("status", "")))}</dd>
+            <dt>Files uploaded</dt><dd>{html.escape(str(success.get("files_uploaded", "")))}</dd>
+          </dl>
+        </div>
+        """
+        confetti = " confetti"
+
+    profile = get_customer_profile(customer_id)
+    first = html.escape(_first_name(profile, email))
+    hello = html.escape(_day_greeting())
+    tip = html.escape(_HOME_TIPS[date.today().toordinal() % len(_HOME_TIPS)])
+    my_claims = list_customer_claims(customer_id)
+    drafts = [row for row in my_claims if row.get("status") == "draft"]
+    submitted = [row for row in my_claims if row.get("status") != "draft"]
+    latest = drafts[0] if drafts else None
+    resume = ""
+    if latest:
+        percent = _draft_progress(latest)
+        resume = f"""
+        <div class="resume">
+          <div>
+            <h2>Pick up where you left off</h2>
+            <p>{html.escape(str(latest["claim_reference"]))} is about {percent}% complete. {_relative_time(latest.get("submission_date")) or "Ready when you are."}</p>
+          </div>
+          <a class="btn btn-primary" href="/ui/claim?draft_id={int(latest["claim_id"])}">Continue draft</a>
+        </div>
+        """
+    drafts_body = _customer_claim_table(drafts, continue_draft=True)
+    if not drafts:
+        drafts_body = """
+        <div class="empty-hero">
+          <div class="mark" aria-hidden="true">✎</div>
+          <p class="empty">Nothing in progress. When something happens, you can start a claim in a couple of minutes.</p>
+        </div>
+        """
+    inner = f"""
+    {banners}
+    <section class="hero{confetti}">
+      <h1>{hello}, {first}</h1>
+      <p>This is your claims home. Start a new claim when you are ready, or pick up a draft you have already saved.</p>
+      <a class="btn btn-primary" href="/ui/claim">Make a claim</a>
+      <p class="tip">{tip}</p>
+    </section>
+    {resume}
+    <div class="card">
+      <h2>Your drafts</h2>
+      <p class="section-help">Continue a saved draft, or delete one you no longer need.</p>
+      {drafts_body}
+    </div>
+    <div class="card">
+      <h2>Submitted claims</h2>
+      {_customer_claim_table(submitted, continue_draft=False)}
+    </div>
+    """
+    return _page("Home | Claim AI", _portal_chrome(email, role, inner, "home"))
+
+
+def _claim_submit_view(
+    email: str,
+    role: str,
+    customer_id: int,
+    *,
+    error: str | None = None,
+    success: dict | None = None,
+    draft: dict[str, Any] | None = None,
 ) -> HTMLResponse:
     banners = ""
     if error:
         banners += _banner("error", error)
     if success:
-        banners += _banner("success", "Claim submitted. Evidence files were uploaded.")
+        saved = "Draft saved. You can come back and submit when you have more details." if success.get("status") == "draft" else "Claim submitted."
+        banners += _banner("success", saved)
         banners += f"""
         <div class="card" style="margin-bottom:20px">
           <h2>Submission details</h2>
@@ -546,6 +907,24 @@ def _claim_submit_view(
             "No policies were found. Insert a row into the policy table, then refresh this page.",
         )
 
+    profile = get_customer_profile(customer_id)
+    draft = draft or {}
+    selected_policy = draft.get("policy_id")
+    selected_number = str(draft.get("policy_number") or "")
+    claimant_name = str(draft.get("claimant_name") or profile.get("name") or "")
+    claimant_email = str(draft.get("claimant_email") or profile.get("email") or email)
+    claimant_phone = str(draft.get("claimant_phone") or profile.get("phone") or "")
+    declaration_name = str(draft.get("declaration_name") or claimant_name)
+    declaration_date = _date_input(draft.get("declaration_date") or date.today())
+    draft_id = int(draft["claim_id"]) if draft.get("claim_id") else ""
+    delete_draft_btn = ""
+    if draft_id:
+        delete_draft_btn = f"""
+        <form method="post" action="/ui/drafts/{draft_id}/delete" onsubmit="return confirm('Delete this draft? This cannot be undone.');">
+          <button class="btn btn-danger" type="submit">Delete draft</button>
+        </form>
+        """
+
     options = ['<option value="">Select a policy</option>']
     for policy in policies:
         policy_id = policy["policy_id"]
@@ -554,39 +933,206 @@ def _claim_submit_view(
         label = html.escape(policy_number)
         if coverage_type:
             label = f"{label} — {html.escape(str(coverage_type))}"
-        options.append(f'<option value="{policy_id}">{label}</option>')
+        selected = "selected" if selected_policy is not None and int(selected_policy) == int(policy_id) else ""
+        if selected:
+            selected_number = policy_number
+        options.append(
+            f'<option value="{policy_id}" data-number="{html.escape(policy_number, quote=True)}" {selected}>{label}</option>'
+        )
+
+    type_options = ['<option value="">Select claim type</option>']
+    current_type = str(draft.get("claim_type") or "")
+    for value, label in CLAIM_TYPES:
+        selected = "selected" if current_type == value else ""
+        type_options.append(f'<option value="{html.escape(value)}" {selected}>{html.escape(label)}</option>')
+
+    others_hidden = "" if draft.get("others_involved") is True else "hidden"
+    police_hidden = "" if draft.get("police_involved") is True else "hidden"
+    estimated = draft.get("estimated_value")
+    estimated_text = "" if estimated is None else str(estimated)
+    incident_desc = draft.get("incident_description") or ""
+    loss_desc = draft.get("loss_description") or ""
+    comments = draft.get("additional_comments") or ""
+    location = draft.get("incident_location") or ""
+    incident_time = draft.get("incident_time") or ""
+    declared = "checked" if draft.get("declaration_accepted") else ""
 
     inner = f"""
-    <div class="crumbs">Claim AI &gt; Submit a claim</div>
-    <h1 class="page-title">Submit a claim</h1>
-    <p class="page-sub">Provide the policy, a description of the incident, and supporting JPEG, PNG, or PDF files.</p>
+    <div class="crumbs"><a href="/ui/home">Home</a> &gt; Make a claim</div>
+    <div class="page-head">
+      <div>
+        <h1 class="page-title">Make a claim</h1>
+        <p class="page-sub">Start with the details you have. You can save a draft and add more later.</p>
+      </div>
+      <div class="row-actions">
+        {delete_draft_btn}
+        <a class="btn btn-primary" href="/ui/claim">New claim</a>
+      </div>
+    </div>
     {banners}
-    <form class="card" method="post" action="/ui/submit" enctype="multipart/form-data">
-      <h2>Claim details</h2>
-      <p class="section-help">All fields are required. Maximum file size is 25 MB per file.</p>
-      <div class="field">
-        <label for="policy_id">Policy</label>
-        <select id="policy_id" name="policy_id" required>
-          {''.join(options)}
-        </select>
-        <p class="hint">Choose the policy this claim should be filed against.</p>
+    <form class="card" id="claim-form" method="post" action="/ui/submit" enctype="multipart/form-data">
+      {"<input type='hidden' name='claim_id' value='" + str(draft_id) + "'>" if draft_id else ""}
+
+      <h2>1. Policy details</h2>
+      <p class="section-help">Choose the policy this claim should be filed against.</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="policy_id">Policy <span class="req">*</span></label>
+          <select id="policy_id" name="policy_id" required>
+            {''.join(options)}
+          </select>
+        </div>
+        <div class="field">
+          <label for="policy_number">Policy number</label>
+          <input id="policy_number" value="{_attr(selected_number)}" readonly>
+          <p class="hint">Automatically populated when a policy is selected.</p>
+        </div>
       </div>
-      <div class="field">
-        <label for="description">Incident description</label>
-        <textarea id="description" name="description" required maxlength="8000" placeholder="What happened, when, and where?"></textarea>
+
+      <h2>2. Your details</h2>
+      <p class="section-help">Prefill from your account. Update them if the contact details for this claim are different.</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="claimant_name">Full name <span class="req">*</span></label>
+          <input id="claimant_name" name="claimant_name" required value="{_attr(claimant_name)}">
+        </div>
+        <div class="field">
+          <label for="claimant_email">Email address <span class="req">*</span></label>
+          <input id="claimant_email" name="claimant_email" type="email" required value="{_attr(claimant_email)}">
+        </div>
+        <div class="field">
+          <label for="claimant_phone">Phone number <span class="req">*</span></label>
+          <input id="claimant_phone" name="claimant_phone" required value="{_attr(claimant_phone)}" placeholder="0400 000 000">
+        </div>
       </div>
+
+      <h2>3. Incident details</h2>
+      <div class="form-grid">
+        <div class="field">
+          <label for="claim_type">What type of claim is this? <span class="req">*</span></label>
+          <select id="claim_type" name="claim_type" required>{''.join(type_options)}</select>
+        </div>
+        <div class="field">
+          <label for="incident_date">Date of incident <span class="req">*</span></label>
+          <input id="incident_date" name="incident_date" type="date" required lang="en-AU" value="{_attr(_date_input(draft.get("incident_date")))}">
+        </div>
+        <div class="field">
+          <label for="incident_time">Approximate time</label>
+          <input id="incident_time" name="incident_time" type="time" value="{_attr(incident_time)}">
+        </div>
+        <div class="field field-span">
+          <label for="incident_location">Where did the incident occur? <span class="req">*</span></label>
+          <input id="incident_location" name="incident_location" required value="{_attr(location)}" placeholder="Enter address/location">
+        </div>
+        <div class="field field-span">
+          <label for="incident_description">What happened? <span class="req">*</span></label>
+          <textarea id="incident_description" name="incident_description" required maxlength="8000" placeholder="Describe what happened...">{html.escape(str(incident_desc))}</textarea>
+        </div>
+      </div>
+
+      <h2>4. Loss or damage</h2>
+      <p class="section-help">Optional now. You can add receipts, quotes or more photos later.</p>
+      <div class="field">
+        <label for="loss_description">What was damaged, lost or stolen?</label>
+        <textarea id="loss_description" name="loss_description" maxlength="8000" placeholder="Describe the item/property...">{html.escape(str(loss_desc))}</textarea>
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="estimated_value">Estimated value of the claim</label>
+          <input id="estimated_value" name="estimated_value" inputmode="decimal" placeholder="$0.00" value="{_attr(estimated_text)}">
+        </div>
+        <div class="field">
+          <label>Is the property damaged?</label>
+          {_radio_row("property_damaged", draft.get("property_damaged"))}
+        </div>
+      </div>
+
+      <h2>5. Other people involved</h2>
+      <div class="field">
+        <label>Was anyone else involved? <span class="req">*</span></label>
+        {_radio_row("others_involved", draft.get("others_involved"), required=True)}
+      </div>
+      <div id="others-fields" class="form-grid" {others_hidden}>
+        <div class="field"><label for="other_party_name">Name</label><input id="other_party_name" name="other_party_name" value="{_attr(draft.get("other_party_name"))}"></div>
+        <div class="field"><label for="other_party_phone">Phone number</label><input id="other_party_phone" name="other_party_phone" value="{_attr(draft.get("other_party_phone"))}"></div>
+        <div class="field"><label for="other_party_email">Email</label><input id="other_party_email" name="other_party_email" type="email" value="{_attr(draft.get("other_party_email"))}"></div>
+        <div class="field field-span"><label for="other_party_address">Address</label><input id="other_party_address" name="other_party_address" value="{_attr(draft.get("other_party_address"))}"></div>
+        <div class="field"><label for="other_party_vehicle_reg">Vehicle registration</label><input id="other_party_vehicle_reg" name="other_party_vehicle_reg" value="{_attr(draft.get("other_party_vehicle_reg"))}"></div>
+        <div class="field"><label for="other_party_insurer">Insurance company</label><input id="other_party_insurer" name="other_party_insurer" value="{_attr(draft.get("other_party_insurer"))}"></div>
+      </div>
+
+      <h2>6. Police / emergency services</h2>
+      <div class="field">
+        <label>Were police involved?</label>
+        {_radio_row("police_involved", draft.get("police_involved"))}
+      </div>
+      <div id="police-fields" class="form-grid" {police_hidden}>
+        <div class="field"><label for="police_report_number">Police incident/report number</label><input id="police_report_number" name="police_report_number" value="{_attr(draft.get("police_report_number"))}"></div>
+        <div class="field"><label for="police_station">Police station</label><input id="police_station" name="police_station" value="{_attr(draft.get("police_station"))}"></div>
+      </div>
+
+      <h2>7. Supporting documents</h2>
       <div class="field file-drop">
         <label for="files">Supporting evidence</label>
-        <input id="files" name="files" type="file" required multiple accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf">
-        <p class="hint">JPEG, PNG, or PDF. You can select more than one file.</p>
+        <input id="files" name="files" type="file" multiple accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf">
+        <p class="hint">Photos, receipts, repair quotes, invoices or police reports. JPEG, PNG or PDF. Maximum 25 MB per file.</p>
       </div>
+      <div class="field">
+        <label for="additional_comments">Additional comments</label>
+        <textarea id="additional_comments" name="additional_comments" maxlength="8000" placeholder="Anything else you'd like us to know...">{html.escape(str(comments))}</textarea>
+      </div>
+
+      <h2>8. Declaration</h2>
+      <div class="field">
+        <label class="check-row">
+          <input id="declaration_accepted" name="declaration_accepted" type="checkbox" value="yes" required {declared}>
+          <span>I confirm that the information provided in this claim is true and accurate to the best of my knowledge. <span class="req">*</span></span>
+        </label>
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label for="declaration_name">Name</label>
+          <input id="declaration_name" name="declaration_name" value="{_attr(declaration_name)}">
+        </div>
+        <div class="field">
+          <label for="declaration_date">Date</label>
+          <input id="declaration_date" name="declaration_date" type="date" lang="en-AU" value="{_attr(declaration_date)}">
+        </div>
+      </div>
+
       <div class="form-actions">
-        <a class="btn btn-secondary" href="/ui/claim">Discard</a>
-        <button class="btn btn-primary" type="submit">Submit claim</button>
+        <a class="btn btn-secondary" href="/ui/home">Back to home</a>
+        <button class="btn btn-secondary" type="submit" name="intent" value="draft" formnovalidate>Save as draft</button>
+        <button class="btn btn-primary" type="submit" name="intent" value="submit">Submit claim</button>
       </div>
     </form>
+    <script>
+      const policy = document.getElementById("policy_id");
+      const policyNumber = document.getElementById("policy_number");
+      function syncPolicy() {{
+        const opt = policy.options[policy.selectedIndex];
+        policyNumber.value = opt && opt.dataset.number ? opt.dataset.number : "";
+      }}
+      policy.addEventListener("change", syncPolicy);
+      function bindToggle(name, targetId) {{
+        const target = document.getElementById(targetId);
+        document.querySelectorAll("input[name='" + name + "']").forEach((input) => {{
+          input.addEventListener("change", () => {{
+            target.hidden = input.value !== "yes" || !input.checked;
+          }});
+        }});
+      }}
+      bindToggle("others_involved", "others-fields");
+      bindToggle("police_involved", "police-fields");
+      const nameInput = document.getElementById("claimant_name");
+      const decName = document.getElementById("declaration_name");
+      nameInput.addEventListener("input", () => {{
+        if (!decName.dataset.touched) decName.value = nameInput.value;
+      }});
+      decName.addEventListener("input", () => {{ decName.dataset.touched = "1"; }});
+    </script>
     """
-    return _page("Submit a claim | Claim AI", _portal_chrome(email, role, inner, "claim"))
+    return _page("Make a claim | Claim AI", _portal_chrome(email, role, inner, "claim"))
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -690,53 +1236,181 @@ async def download_document(request: Request, doc_id: int):
     auth = _require_role(request, "assessor")
     if isinstance(auth, RedirectResponse):
         return auth
+    doc = get_document(doc_id)
     try:
         downloaded = await download_claim_document(doc_id)
     except Exception as exc:
+        if doc and doc.get("claim_id"):
+            claim = get_claim(int(doc["claim_id"]))
+            if claim is not None:
+                return _claim_detail_view(
+                    auth["email"], auth["role"], claim,
+                    error=f"Could not download file: {exc}",
+                )
         return _dashboard_view(auth["email"], auth["role"], error=f"Could not download file: {exc}")
     if downloaded is None:
         return _dashboard_view(auth["email"], auth["role"], error="Document not found.")
     data, filename, media_type = downloaded
-    return Response(
-        content=data,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    return evidence_download_response(data, filename, media_type)
+
+
+@router.get("/home", response_class=HTMLResponse)
+def claimant_home(request: Request, submitted: int | None = None, deleted: str | None = None):
+    auth = _require_role(request, "claimant")
+    if isinstance(auth, RedirectResponse):
+        return auth
+    success = None
+    notice = None
+    if deleted:
+        notice = f"Draft {deleted} was deleted."
+    if submitted:
+        success = {
+            "claim_id": request.query_params.get("id", ""),
+            "claim_reference": request.query_params.get("ref", ""),
+            "status": "submitted",
+            "files_uploaded": request.query_params.get("files", ""),
+        }
+    return _claimant_home_view(
+        auth["email"], auth["role"], auth["id"],
+        success=success,
+        notice=notice,
     )
 
 
-@router.get("/claim", response_class=HTMLResponse)
-def claim_get(request: Request):
+@router.post("/drafts/{claim_id}/delete")
+async def delete_draft_page(request: Request, claim_id: int):
     auth = _require_role(request, "claimant")
     if isinstance(auth, RedirectResponse):
         return auth
-    return _claim_submit_view(auth["email"], auth["role"])
+    try:
+        result = await delete_customer_draft(claim_id, auth["id"])
+    except ClaimSubmitError as exc:
+        return _claimant_home_view(auth["email"], auth["role"], auth["id"], error=str(exc))
+    ref = quote(str(result.get("claim_reference") or "draft"))
+    return RedirectResponse(f"/ui/home?deleted={ref}", status_code=303)
+
+
+@router.get("/claim", response_class=HTMLResponse)
+def claim_get(request: Request, draft_id: int | None = None, saved: int | None = None):
+    auth = _require_role(request, "claimant")
+    if isinstance(auth, RedirectResponse):
+        return auth
+    draft = None
+    error = None
+    success = None
+    if draft_id is not None:
+        draft = get_customer_claim(draft_id, auth["id"])
+        if draft is None or draft.get("status") != "draft":
+            draft = None
+            error = "That draft was not found."
+        elif saved:
+            success = {
+                "claim_id": draft["claim_id"],
+                "claim_reference": draft["claim_reference"],
+                "status": draft["status"],
+                "files_uploaded": 0,
+            }
+    return _claim_submit_view(
+        auth["email"], auth["role"], auth["id"],
+        draft=draft,
+        error=error,
+        success=success,
+    )
+
+
+def _form_text(form: Any, key: str) -> str | None:
+    value = form.get(key)
+    if value is None or hasattr(value, "filename"):
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 @router.post("/submit", response_class=HTMLResponse)
-async def claim_submit(
-    request: Request,
-    policy_id: int = Form(...),
-    description: str = Form(...),
-    files: list[UploadFile] = File(...),
-    db: AsyncSession = Depends(get_db),
-):
+async def claim_submit(request: Request, db: AsyncSession = Depends(get_db)):
     auth = _require_role(request, "claimant")
     if isinstance(auth, RedirectResponse):
         return auth
 
-    description = description.strip()
-    if not description:
-        return _claim_submit_view(auth["email"], auth["role"], error="Description is required.")
+    form = await request.form()
+    files = [item for item in form.getlist("files") if getattr(item, "filename", None)]
+    policy_raw = _form_text(form, "policy_id")
+    claim_id_raw = _form_text(form, "claim_id")
+    try:
+        policy_id = int(policy_raw) if policy_raw else None
+        claim_id = int(claim_id_raw) if claim_id_raw else None
+    except ValueError:
+        return _claim_submit_view(
+            auth["email"], auth["role"], auth["id"],
+            error="Choose a valid policy.",
+        )
 
     user = {"sub": str(auth["id"]), "role": auth["role"], "email": auth["email"]}
+    payload = {
+        "claim_type": _form_text(form, "claim_type"),
+        "incident_date": _form_text(form, "incident_date"),
+        "incident_time": _form_text(form, "incident_time"),
+        "incident_location": _form_text(form, "incident_location"),
+        "incident_description": _form_text(form, "incident_description"),
+        "loss_description": _form_text(form, "loss_description"),
+        "estimated_value": _form_text(form, "estimated_value"),
+        "property_damaged": _form_text(form, "property_damaged"),
+        "claimant_name": _form_text(form, "claimant_name"),
+        "claimant_email": _form_text(form, "claimant_email"),
+        "claimant_phone": _form_text(form, "claimant_phone"),
+        "others_involved": _form_text(form, "others_involved"),
+        "other_party_name": _form_text(form, "other_party_name"),
+        "other_party_phone": _form_text(form, "other_party_phone"),
+        "other_party_email": _form_text(form, "other_party_email"),
+        "other_party_address": _form_text(form, "other_party_address"),
+        "other_party_vehicle_reg": _form_text(form, "other_party_vehicle_reg"),
+        "other_party_insurer": _form_text(form, "other_party_insurer"),
+        "police_involved": _form_text(form, "police_involved"),
+        "police_report_number": _form_text(form, "police_report_number"),
+        "police_station": _form_text(form, "police_station"),
+        "additional_comments": _form_text(form, "additional_comments"),
+        "declaration_accepted": _form_text(form, "declaration_accepted"),
+        "declaration_name": _form_text(form, "declaration_name"),
+        "declaration_date": _form_text(form, "declaration_date"),
+    }
     try:
         result = await submit_claim(
             db=db,
             user=user,
             policy_id=policy_id,
-            description=description,
             files=files,
+            intent=_form_text(form, "intent") or "submit",
+            claim_id=claim_id,
+            **payload,
         )
     except ClaimSubmitError as exc:
-        return _claim_submit_view(auth["email"], auth["role"], error=str(exc))
-    return _claim_submit_view(auth["email"], auth["role"], success=result)
+        posted = {
+            "policy_id": policy_id,
+            "claim_id": claim_id,
+            **payload,
+        }
+        for key in ("others_involved", "police_involved", "property_damaged", "declaration_accepted"):
+            raw = str(posted.get(key) or "").lower()
+            if raw in {"yes", "true", "on", "1"}:
+                posted[key] = True
+            elif raw in {"no", "false", "off", "0"}:
+                posted[key] = False
+            else:
+                posted[key] = None
+        return _claim_submit_view(
+            auth["email"], auth["role"], auth["id"],
+            error=str(exc),
+            draft=posted,
+        )
+    if result.get("status") == "draft":
+        return RedirectResponse(
+            f"/ui/claim?draft_id={result['claim_id']}&saved=1",
+            status_code=303,
+        )
+    return RedirectResponse(
+        "/ui/home?submitted=1"
+        f"&id={result['claim_id']}"
+        f"&ref={quote(str(result['claim_reference']))}"
+        f"&files={result['files_uploaded']}",
+        status_code=303,
+    )

@@ -17,6 +17,8 @@ class CurrentUser(BaseModel):
     id: int
     role: str
     email: str
+    name: str | None = None
+    phone: str | None = None
 
 
 class PolicyOut(BaseModel):
@@ -30,6 +32,10 @@ class ClaimSubmitOut(BaseModel):
     claim_reference: str
     status: str
     files_uploaded: int
+
+
+class ClaimFormOptions(BaseModel):
+    claim_types: list[dict[str, str]]
 
 
 class ClaimCounts(BaseModel):

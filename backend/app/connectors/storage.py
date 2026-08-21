@@ -1,5 +1,8 @@
 """Azure Blob Storage connection and blob I/O."""
 
+from urllib.parse import unquote, urlparse
+
+from azure.core.exceptions import ResourceNotFoundError
 from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import BlobServiceClient, ContainerClient
 
@@ -103,6 +106,45 @@ async def list_blobs(*, container_name: str, prefix: str = "") -> list[str]:
     async for blob in container.list_blobs(name_starts_with=prefix or None):
         names.append(blob.name)
     return names
+
+
+def resolve_stored_blob(file_url: str) -> tuple[str, str]:
+    """Return (container_name, blob_name) from a stored claim_document.file_url.
+
+    Older rows may store a full Azure URL; newer rows store the blob path.
+    """
+    value = (file_url or "").strip()
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        parts = [unquote(part) for part in parsed.path.split("/") if part]
+        if len(parts) >= 2:
+            return parts[0], "/".join(parts[1:])
+        if parts:
+            return settings.azure_storage_images_container_name, parts[0]
+    return settings.azure_storage_images_container_name, unquote(value.lstrip("/"))
+
+
+async def download_stored_blob(file_url: str) -> bytes:
+    """Download claim evidence from whatever container it was stored in."""
+    container, blob_name = resolve_stored_blob(file_url)
+    candidates: list[str] = [container]
+    for extra in (
+        settings.azure_storage_images_container_name,
+        settings.azure_storage_videos_container_name,
+        settings.azure_storage_pds_policies_container_name,
+    ):
+        if extra and extra not in candidates:
+            candidates.append(extra)
+
+    last_error: Exception | None = None
+    for name in candidates:
+        try:
+            return await download_blob(blob_name, container_name=name)
+        except ResourceNotFoundError as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise FileNotFoundError(f"Blob not found: {blob_name}")
 
 
 async def upload_image(
