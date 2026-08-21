@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.models import Assessor, Customer
 from app.config import settings
+from app.connectors.db import get_sync_connection
 
 
 class InvalidCredentials(Exception):
@@ -78,3 +79,44 @@ def session_from_token(token: str) -> dict | None:
         "role": role,
         "email": str(payload.get("email") or ""),
     }
+
+
+def get_account_profile(user: dict) -> dict:
+    """Name and phone for the logged-in account. Vue uses this to prefill the claim form."""
+    user_id = int(user["sub"])
+    role = str(user.get("role") or "")
+    email = str(user.get("email") or "")
+    conn = get_sync_connection()
+    try:
+        with conn.cursor() as cur:
+            if role == "assessor":
+                cur.execute(
+                    "SELECT name, email FROM assessor WHERE assessor_id = %s",
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return {"id": user_id, "role": role, "email": email, "name": None, "phone": None}
+                return {
+                    "id": user_id,
+                    "role": role,
+                    "name": row[0],
+                    "email": row[1] or email,
+                    "phone": None,
+                }
+            cur.execute(
+                "SELECT name, email, phone FROM customer WHERE customer_id = %s",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return {"id": user_id, "role": role, "email": email, "name": None, "phone": None}
+            return {
+                "id": user_id,
+                "role": role,
+                "name": row[0],
+                "email": row[1] or email,
+                "phone": row[2],
+            }
+    finally:
+        conn.close()

@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, DateTime, Float, Boolean, 
+    Column, Integer, String, DateTime, Date, Float, Boolean,
     ForeignKey, Text, Numeric
 )
 from sqlalchemy.orm import relationship
@@ -62,6 +62,7 @@ class PDSDocument(Base):
 
 class ClaimStatus(str, enum.Enum):
     """ Allowed values for the status. """
+    DRAFT = "draft"
     SUBMITTED = "submitted"
     UNDER_REVIEW = "under_review"
     APPROVED = "approved"
@@ -82,6 +83,32 @@ class Claim(Base):
     fraud_risk_score = Column(Float, default=0.0)
     cost = Column(Numeric(12, 2))
     outcome_date = Column(DateTime)
+
+    claim_type = Column(String(50))
+    incident_date = Column(Date)
+    incident_time = Column(String(8))
+    incident_location = Column(Text)
+    incident_description = Column(Text)
+    loss_description = Column(Text)
+    estimated_value = Column(Numeric(12, 2))
+    property_damaged = Column(Boolean)
+    claimant_name = Column(String(100))
+    claimant_email = Column(String(100))
+    claimant_phone = Column(String(20))
+    others_involved = Column(Boolean)
+    other_party_name = Column(String(100))
+    other_party_phone = Column(String(20))
+    other_party_email = Column(String(100))
+    other_party_address = Column(Text)
+    other_party_vehicle_reg = Column(String(20))
+    other_party_insurer = Column(String(100))
+    police_involved = Column(Boolean)
+    police_report_number = Column(String(50))
+    police_station = Column(String(100))
+    additional_comments = Column(Text)
+    declaration_accepted = Column(Boolean, default=False)
+    declaration_name = Column(String(100))
+    declaration_date = Column(Date)
 
     customer = relationship("Customer", back_populates="claims")
     policy = relationship("Policy", back_populates="claims")
