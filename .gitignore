@@ -38,5 +38,8 @@ backend/data/chroma/
 # Local pgAdmin Docker setup
 backend/pgAdmin/
 
+# Sample policy PDFs (local seed data)
+backend/policy_docs/
+
 # Logs
 *.log
