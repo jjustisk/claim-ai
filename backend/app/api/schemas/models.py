@@ -20,6 +20,7 @@ class Customer(Base):
 
 
     claims = relationship("Claim", back_populates="customer")
+    policies = relationship("Policy", back_populates="customer")
     notifications = relationship("Notification", back_populates="customer")
 
 
@@ -40,11 +41,13 @@ class Policy(Base):
     __tablename__ = "policy"
 
     policy_id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customer.customer_id"), nullable=False, index=True)
     policy_number = Column(String(50), unique=True, nullable=False)
     coverage_type = Column(String(100))
     start_date = Column(DateTime)
     end_date = Column(DateTime)
 
+    customer = relationship("Customer", back_populates="policies")
     claims = relationship("Claim", back_populates="policy")
     pds_documents = relationship("PDSDocument", back_populates="policy")
 

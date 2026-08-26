@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import require_assessor, require_claimant
+from app.api.dependencies import get_current_user, require_assessor, require_claimant
 from app.api.schemas.responses import ClaimFormOptions, ClaimListOut, ClaimSubmitOut, ReviewIn
 from app.connectors.db import get_db
 from app.services.assessor_service import (
@@ -18,8 +18,10 @@ from app.services.assessor_service import (
 )
 from app.services.claim_service import (
     ClaimSubmitError,
+    customer_owns_claim_document,
     delete_customer_draft,
     form_options,
+    get_customer_claim,
     list_customer_claims,
     submit_claim,
 )
@@ -35,6 +37,14 @@ def claim_form_options(_user: dict = Depends(require_claimant)) -> ClaimFormOpti
 @router.get("/mine")
 def my_claims(user: dict = Depends(require_claimant)) -> list[dict]:
     return jsonable_encoder(list_customer_claims(int(user["sub"])))
+
+
+@router.get("/mine/{claim_id}")
+def my_claim_detail(claim_id: int, user: dict = Depends(require_claimant)) -> dict:
+    claim = get_customer_claim(claim_id, int(user["sub"]))
+    if claim is None:
+        raise HTTPException(404, "Claim not found.")
+    return jsonable_encoder(claim)
 
 
 @router.post("/", response_model=ClaimSubmitOut)
@@ -161,9 +171,16 @@ def claim_review(
 @router.get("/documents/{doc_id}")
 async def download_document(
     doc_id: int,
-    _user: dict = Depends(require_assessor),
+    user: dict = Depends(get_current_user),
 ) -> Response:
     from azure.core.exceptions import ResourceNotFoundError
+
+    role = user.get("role")
+    if role == "claimant":
+        if not customer_owns_claim_document(doc_id, int(user["sub"])):
+            raise HTTPException(404, "Document not found.")
+    elif role != "assessor":
+        raise HTTPException(403, "Access denied.")
 
     try:
         downloaded = await download_claim_document(doc_id)

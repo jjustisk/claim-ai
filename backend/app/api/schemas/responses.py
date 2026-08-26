@@ -27,6 +27,12 @@ class PolicyOut(BaseModel):
     coverage_type: str | None = None
 
 
+class PolicyDocumentOut(BaseModel):
+    pds_id: int
+    version: str | None = None
+    effective_date: datetime | None = None
+
+
 class ClaimSubmitOut(BaseModel):
     claim_id: int
     claim_reference: str

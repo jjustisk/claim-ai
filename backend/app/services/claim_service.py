@@ -102,6 +102,55 @@ def ensure_claim_form_columns() -> None:
         conn.close()
 
 
+def ensure_policy_customer_column() -> None:
+    """Link policies to customers and backfill from existing claims where possible."""
+    conn = get_sync_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                ALTER TABLE policy
+                ADD COLUMN IF NOT EXISTS customer_id INTEGER
+                REFERENCES customer(customer_id)
+                """
+            )
+            cur.execute(
+                """
+                UPDATE policy p
+                SET customer_id = sub.customer_id
+                FROM (
+                    SELECT DISTINCT ON (policy_id) policy_id, customer_id
+                    FROM claim
+                    ORDER BY policy_id, claim_id
+                ) sub
+                WHERE p.policy_id = sub.policy_id
+                  AND p.customer_id IS NULL
+                """
+            )
+            cur.execute("DELETE FROM policy WHERE customer_id IS NULL")
+            cur.execute("ALTER TABLE policy ALTER COLUMN customer_id SET NOT NULL")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def customer_owns_policy(policy_id: int, customer_id: int) -> bool:
+    conn = get_sync_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM policy
+                WHERE policy_id = %s AND customer_id = %s
+                """,
+                (policy_id, customer_id),
+            )
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
 def get_customer_profile(customer_id: int) -> dict[str, str | None]:
     conn = get_sync_connection()
     try:
@@ -130,6 +179,7 @@ def get_customer_claim(claim_id: int, customer_id: int) -> dict[str, Any] | None
                 """
                 SELECT
                     c.*,
+                    p.policy_id,
                     p.policy_number,
                     p.coverage_type
                 FROM claim c
@@ -137,6 +187,80 @@ def get_customer_claim(claim_id: int, customer_id: int) -> dict[str, Any] | None
                 WHERE c.claim_id = %s AND c.customer_id = %s
                 """,
                 (claim_id, customer_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            claim = dict(zip([col[0] for col in cur.description], row))
+            cur.execute(
+                """
+                SELECT doc_id, file_type, file_url, upload_date
+                FROM claim_document
+                WHERE claim_id = %s
+                ORDER BY upload_date, doc_id
+                """,
+                (claim_id,),
+            )
+            claim["documents"] = [
+                dict(zip([col[0] for col in cur.description], doc))
+                for doc in cur.fetchall()
+            ]
+            return claim
+    finally:
+        conn.close()
+
+
+def customer_owns_claim_document(doc_id: int, customer_id: int) -> bool:
+    conn = get_sync_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM claim_document cd
+                JOIN claim c ON c.claim_id = cd.claim_id
+                WHERE cd.doc_id = %s AND c.customer_id = %s
+                """,
+                (doc_id, customer_id),
+            )
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def list_policy_documents(policy_id: int, customer_id: int) -> list[dict[str, Any]]:
+    if not customer_owns_policy(policy_id, customer_id):
+        return []
+    conn = get_sync_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT pds_id, version, effective_date
+                FROM pds_document
+                WHERE policy_id = %s
+                ORDER BY pds_id
+                """,
+                (policy_id,),
+            )
+            columns = [col[0] for col in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_policy_document(pds_id: int, customer_id: int) -> dict[str, Any] | None:
+    conn = get_sync_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT d.pds_id, d.policy_id, d.version, d.file_url, d.effective_date
+                FROM pds_document d
+                JOIN policy p ON p.policy_id = d.policy_id
+                WHERE d.pds_id = %s AND p.customer_id = %s
+                """,
+                (pds_id, customer_id),
             )
             row = cur.fetchone()
             if row is None:
@@ -411,6 +535,9 @@ async def submit_claim(
         status = ClaimStatus.SUBMITTED.value
 
     customer_id = int(user["sub"])
+    if policy_id is not None and not customer_owns_policy(int(policy_id), customer_id):
+        raise ClaimSubmitError("Policy not found.")
+
     claim: Claim | None = None
     if claim_id is not None:
         claim = await db.get(Claim, claim_id)
@@ -450,7 +577,7 @@ async def submit_claim(
     }
 
 
-def list_policies() -> list[dict[str, int | str | None]]:
+def list_policies(customer_id: int) -> list[dict[str, int | str | None]]:
     conn = get_sync_connection()
     try:
         with conn.cursor() as cur:
@@ -458,9 +585,11 @@ def list_policies() -> list[dict[str, int | str | None]]:
                 """
                 SELECT policy_id, policy_number, coverage_type
                 FROM policy
+                WHERE customer_id = %s
                 ORDER BY policy_id
                 LIMIT 50
-                """
+                """,
+                (customer_id,),
             )
             return [
                 {

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.connectors.db import get_sync_connection
 from app.connectors.storage import close_blob_service_client, upload_pds_policy
 from app.services.auth_service import hash_password
-from app.services.claim_service import ensure_claim_form_columns, generate_claim_reference
+from app.services.claim_service import ensure_claim_form_columns, ensure_policy_customer_column, generate_claim_reference
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 POLICY_DOCS = BACKEND_DIR / "policy_docs"
@@ -123,26 +123,26 @@ def upsert_customer(cur, *, name: str, email: str, address: str, password_hash: 
     return int(cur.fetchone()[0]), "created"
 
 
-def upsert_policy(cur, *, policy_number: str, coverage_type: str) -> tuple[int, str]:
+def upsert_policy(cur, *, customer_id: int, policy_number: str, coverage_type: str) -> tuple[int, str]:
     cur.execute("SELECT policy_id FROM policy WHERE policy_number = %s", (policy_number,))
     row = cur.fetchone()
     if row:
         cur.execute(
             """
             UPDATE policy
-            SET coverage_type = %s, start_date = %s, end_date = %s
+            SET customer_id = %s, coverage_type = %s, start_date = %s, end_date = %s
             WHERE policy_id = %s
             """,
-            (coverage_type, PERIOD_START, PERIOD_END, row[0]),
+            (customer_id, coverage_type, PERIOD_START, PERIOD_END, row[0]),
         )
         return int(row[0]), "updated"
     cur.execute(
         """
-        INSERT INTO policy (policy_number, coverage_type, start_date, end_date)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO policy (customer_id, policy_number, coverage_type, start_date, end_date)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING policy_id
         """,
-        (policy_number, coverage_type, PERIOD_START, PERIOD_END),
+        (customer_id, policy_number, coverage_type, PERIOD_START, PERIOD_END),
     )
     return int(cur.fetchone()[0]), "created"
 
@@ -267,6 +267,7 @@ async def seed() -> None:
         raise FileNotFoundError(f"policy_docs not found: {POLICY_DOCS}")
 
     ensure_claim_form_columns()
+    ensure_policy_customer_column()
     password_hash = hash_password(PASSWORD)
     conn = get_sync_connection()
     summary: list[str] = []
@@ -286,6 +287,7 @@ async def seed() -> None:
                 for policy in customer["policies"]:
                     policy_id, policy_action = upsert_policy(
                         cur,
+                        customer_id=customer_id,
                         policy_number=policy["policy_number"],
                         coverage_type=policy["coverage_type"],
                     )

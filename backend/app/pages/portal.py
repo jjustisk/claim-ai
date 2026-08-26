@@ -16,6 +16,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.connectors.db import get_db
+from app.pages.ui_session import (
+    COOKIE_EMAIL,
+    COOKIE_TOKEN,
+    home_path_for_role,
+    require_ui_role,
+    session_from_request,
+)
 from app.services.assessor_service import (
     REVIEW_OUTCOMES,
     STATUS_LABELS,
@@ -37,6 +44,7 @@ from app.services.auth_service import (
 from app.services.claim_service import (
     CLAIM_TYPES,
     ClaimSubmitError,
+    customer_owns_claim_document,
     delete_customer_draft,
     get_customer_claim,
     get_customer_profile,
@@ -45,14 +53,7 @@ from app.services.claim_service import (
     submit_claim,
 )
 
-COOKIE_TOKEN = "claim_ai_token"
-COOKIE_EMAIL = "claim_ai_email"
-
 router = APIRouter(prefix="/ui", include_in_schema=False)
-
-
-def home_path_for_role(role: str) -> str:
-    return "/ui/dashboard" if role == "assessor" else "/ui/home"
 
 
 def _fmt_dt(value: Any) -> str:
@@ -420,25 +421,11 @@ def _status_pill(status: str) -> str:
 
 
 def _session(request: Request) -> dict | None:
-    token = request.cookies.get(COOKIE_TOKEN)
-    email = request.cookies.get(COOKIE_EMAIL)
-    if not token or not email:
-        return None
-    session = session_from_token(token)
-    if session is None:
-        return None
-    session["token"] = token
-    session["email"] = email
-    return session
+    return session_from_request(request)
 
 
 def _require_role(request: Request, role: str) -> dict | RedirectResponse:
-    session = _session(request)
-    if not session:
-        return RedirectResponse("/ui/login", status_code=303)
-    if session["role"] != role:
-        return RedirectResponse(home_path_for_role(session["role"]), status_code=303)
-    return session
+    return require_ui_role(request, role)
 
 
 def _login_view(error: str | None = None) -> HTMLResponse:
@@ -893,7 +880,7 @@ def _claim_submit_view(
         """
 
     try:
-        policies = list_policies()
+        policies = list_policies(customer_id)
         policy_error = None
     except Exception as exc:
         policies = []
@@ -1250,6 +1237,26 @@ async def download_document(request: Request, doc_id: int):
         return _dashboard_view(auth["email"], auth["role"], error=f"Could not download file: {exc}")
     if downloaded is None:
         return _dashboard_view(auth["email"], auth["role"], error="Document not found.")
+    data, filename, media_type = downloaded
+    return evidence_download_response(data, filename, media_type)
+
+
+@router.get("/my-documents/{doc_id}")
+async def download_my_document(request: Request, doc_id: int):
+    auth = _require_role(request, "claimant")
+    if isinstance(auth, RedirectResponse):
+        return auth
+    if not customer_owns_claim_document(doc_id, auth["id"]):
+        return _claimant_home_view(auth["email"], auth["role"], auth["id"], error="Document not found.")
+    try:
+        downloaded = await download_claim_document(doc_id)
+    except Exception as exc:
+        return _claimant_home_view(
+            auth["email"], auth["role"], auth["id"],
+            error=f"Could not download file: {exc}",
+        )
+    if downloaded is None:
+        return _claimant_home_view(auth["email"], auth["role"], auth["id"], error="Document not found.")
     data, filename, media_type = downloaded
     return evidence_download_response(data, filename, media_type)
 

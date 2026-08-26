@@ -147,6 +147,8 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
             if not row:
                 return None
             claim = dict(zip([col[0] for col in cur.description], row))
+            if claim.get("status") == ClaimStatus.DRAFT.value:
+                return None
 
             cur.execute(
                 """
@@ -211,6 +213,16 @@ def save_review(assessor_id: int, claim_id: int, outcome: str, notes: str) -> No
     conn = get_sync_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM claim WHERE claim_id = %s",
+                (claim_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ReviewError("Claim not found.")
+            if row[0] == ClaimStatus.DRAFT.value:
+                raise ReviewError("Draft claims cannot be reviewed.")
+
             cur.execute(
                 """
                 INSERT INTO reviews (
