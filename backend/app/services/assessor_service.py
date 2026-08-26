@@ -16,6 +16,7 @@ from fastapi.responses import Response
 from app.api.schemas import ClaimStatus
 from app.connectors.db import get_sync_connection
 from app.connectors.storage import download_stored_blob
+from app.services.claim_form import attach_form_details
 from app.services.sanitization_service import sanitize_free_text
 
 STATUS_LABELS = {
@@ -96,39 +97,7 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
             cur.execute(
                 """
                 SELECT
-                    c.claim_id,
-                    c.claim_reference,
-                    c.status,
-                    c.submission_date,
-                    c.outcome_date,
-                    c.priority_level,
-                    c.fraud_risk_score,
-                    c.cost,
-                    c.claim_type,
-                    c.incident_date,
-                    c.incident_time,
-                    c.incident_location,
-                    c.incident_description,
-                    c.loss_description,
-                    c.estimated_value,
-                    c.property_damaged,
-                    c.claimant_name,
-                    c.claimant_email,
-                    c.claimant_phone,
-                    c.others_involved,
-                    c.other_party_name,
-                    c.other_party_phone,
-                    c.other_party_email,
-                    c.other_party_address,
-                    c.other_party_vehicle_reg,
-                    c.other_party_insurer,
-                    c.police_involved,
-                    c.police_report_number,
-                    c.police_station,
-                    c.additional_comments,
-                    c.declaration_accepted,
-                    c.declaration_name,
-                    c.declaration_date,
+                    c.*,
                     cu.customer_id,
                     cu.name AS customer_name,
                     cu.email AS customer_email,
@@ -147,6 +116,8 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
             if not row:
                 return None
             claim = dict(zip([col[0] for col in cur.description], row))
+            if claim.get("status") == ClaimStatus.DRAFT.value:
+                return None
 
             cur.execute(
                 """
@@ -191,9 +162,9 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
                 dict(zip([col[0] for col in cur.description], review))
                 for review in cur.fetchall()
             ]
-            return claim
     finally:
         conn.close()
+    return attach_form_details(claim)
 
 
 def save_review(assessor_id: int, claim_id: int, outcome: str, notes: str) -> None:
@@ -211,6 +182,16 @@ def save_review(assessor_id: int, claim_id: int, outcome: str, notes: str) -> No
     conn = get_sync_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM claim WHERE claim_id = %s",
+                (claim_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise ReviewError("Claim not found.")
+            if row[0] == ClaimStatus.DRAFT.value:
+                raise ReviewError("Draft claims cannot be reviewed.")
+
             cur.execute(
                 """
                 INSERT INTO reviews (

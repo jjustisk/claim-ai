@@ -8,4 +8,4 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.services.claim_service import ensure_claim_form_columns
 
 ensure_claim_form_columns()
-print("Migration complete: claim form columns are live.")
+print("Migration complete: Allianz motor and property claim form tables are live.")

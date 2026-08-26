@@ -5,9 +5,10 @@ Mounted on the main app at /ui/storage. Temporary test UI — Vue will not use t
 
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from app.pages.ui_session import require_ui_role
 from app.services.storage_service import (
     connection_string_configured,
     containers_public_json,
@@ -377,12 +378,18 @@ INDEX_HTML = """<!DOCTYPE html>
 
 
 @router.get("/", response_class=HTMLResponse)
-def index() -> str:
+def index(request: Request):
+    auth = require_ui_role(request, "assessor")
+    if isinstance(auth, RedirectResponse):
+        return auth
     return INDEX_HTML.replace("__CONTAINERS_JSON__", containers_public_json())
 
 
 @router.get("/api/{container_key}/blobs")
-async def blobs(container_key: str) -> dict[str, Any]:
+async def blobs(request: Request, container_key: str) -> dict[str, Any]:
+    auth = require_ui_role(request, "assessor")
+    if isinstance(auth, RedirectResponse):
+        raise HTTPException(401, "Assessor sign-in required.")
     if not connection_string_configured():
         raise HTTPException(503, "AZURE_STORAGE_CONNECTION_STRING is not set")
     try:
@@ -394,7 +401,10 @@ async def blobs(container_key: str) -> dict[str, Any]:
 
 
 @router.post("/api/{container_key}/upload")
-async def upload(container_key: str, file: UploadFile = File(...)) -> JSONResponse:
+async def upload(request: Request, container_key: str, file: UploadFile = File(...)) -> JSONResponse:
+    auth = require_ui_role(request, "assessor")
+    if isinstance(auth, RedirectResponse):
+        raise HTTPException(401, "Assessor sign-in required.")
     if not connection_string_configured():
         raise HTTPException(503, "AZURE_STORAGE_CONNECTION_STRING is not set")
     try:

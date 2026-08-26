@@ -27,6 +27,12 @@ class PolicyOut(BaseModel):
     coverage_type: str | None = None
 
 
+class PolicyDocumentOut(BaseModel):
+    pds_id: int
+    version: str | None = None
+    effective_date: datetime | None = None
+
+
 class ClaimSubmitOut(BaseModel):
     claim_id: int
     claim_reference: str
@@ -35,7 +41,20 @@ class ClaimSubmitOut(BaseModel):
 
 
 class ClaimFormOptions(BaseModel):
-    claim_types: list[dict[str, str]]
+    claim_types: list[dict[str, str]] = []
+    insurance_types: list[dict[str, str]] = []
+    property_claim_types: list[dict[str, str]] = []
+    titles: list[dict[str, str]] = []
+    states: list[dict[str, str]] = []
+    contact_methods: list[dict[str, str]] = []
+    motor_relationships: list[dict[str, str]] = []
+    property_relationships: list[dict[str, str]] = []
+    vehicle_types: list[dict[str, str]] = []
+    vehicle_damage_areas: list[dict[str, str]] = []
+    building_areas: list[dict[str, str]] = []
+    contents_categories: list[dict[str, str]] = []
+
+    model_config = {"extra": "allow"}
 
 
 class ClaimCounts(BaseModel):
