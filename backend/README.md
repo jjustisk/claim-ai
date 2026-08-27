@@ -34,5 +34,6 @@ uvicorn app.main:app --reload
 - http://localhost:8000/docs — OpenAPI (this is what Vue should follow)
 - http://localhost:8000/api/health — API liveness
 - http://localhost:8000/ui/storage — blob storage test UI
+- http://localhost:8000/ui/pds-search — retrieval endpoint test
 
 CORS already allows the Vite defaults (`http://localhost:5173`). Override with `CORS_ORIGINS` in `.env` if needed.

@@ -10,6 +10,8 @@ from app.config import settings
 
 _client: ClientAPI | None = None
 
+PDS_CLAUSES_COLLECTION = "pds_clauses"
+
 
 def get_chroma_client() -> ClientAPI:
     """Return a shared ChromaDB client (HTTP server or local persistent storage)."""
@@ -31,6 +33,11 @@ def get_collection(name: str | None = None) -> Collection:
     """Return a ChromaDB collection, creating it if needed."""
     collection_name = name or settings.chroma_collection_name
     return get_chroma_client().get_or_create_collection(name=collection_name)
+
+
+def get_pds_clauses_collection() -> Collection:
+    """Return the shared collection holding chunked PDS clauses."""
+    return get_collection(PDS_CLAUSES_COLLECTION)
 
 
 def reset_chroma_client() -> None:

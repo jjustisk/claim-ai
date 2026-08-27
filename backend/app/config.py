@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     foundry_gpt_deployment: str = "gpt-5.5"
     foundry_router_deployment: str = "model-router"
     foundry_claude_deployment: str = "model-router"
+    foundry_embedding_deployment: str = "text-embedding-3-large"
 
     # Vue (Vite) and other local frontends. Comma-separated.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

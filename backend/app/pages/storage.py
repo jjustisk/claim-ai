@@ -6,12 +6,13 @@ Mounted on the main app at /ui/storage. Temporary test UI — Vue will not use t
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app.pages.ui_session import require_ui_role
 from app.services.storage_service import (
     connection_string_configured,
     containers_public_json,
+    download_from_container,
     list_container_blobs as list_blobs,
     upload_to_container as upload_blob,
 )
@@ -398,6 +399,27 @@ async def blobs(request: Request, container_key: str) -> dict[str, Any]:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"Could not list blobs: {exc}") from exc
+
+
+@router.get("/api/{container_key}/download")
+async def download(request: Request, container_key: str, name: str) -> Response:
+    auth = require_ui_role(request, "assessor")
+    if isinstance(auth, RedirectResponse):
+        raise HTTPException(401, "Assessor sign-in required.")
+    if not connection_string_configured():
+        raise HTTPException(503, "AZURE_STORAGE_CONNECTION_STRING is not set")
+    try:
+        data, content_type = await download_from_container(container_key, name)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Could not download blob: {exc}") from exc
+    filename = name.rsplit("/", 1)[-1]
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
 
 
 @router.post("/api/{container_key}/upload")

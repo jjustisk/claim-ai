@@ -2,6 +2,7 @@ from sqlalchemy import (
     Column, Integer, String, DateTime, Date, Float, Boolean,
     ForeignKey, Text, Numeric
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.connectors.db import Base
@@ -37,31 +38,67 @@ class Assessor(Base):
     notifications = relationship("Notification", back_populates="assessor")
 
 
+class Product(Base):
+    """An insurance product (e.g. "Motor Vehicle Insurance"). Its PDS is
+    shared across every policy on that product, rather than duplicated per
+    policy — see .claude/plans/stage0-pds-ingestion-retrieval.md."""
+
+    __tablename__ = "product"
+
+    product_id = Column(Integer, primary_key=True, index=True)
+    product_name = Column(String(100), nullable=False, unique=True)
+    insurance_type = Column(String(20))  # "motor" | "property"
+
+    policies = relationship("Policy", back_populates="product")
+    pds_documents = relationship("PDSDocument", back_populates="product")
+
+
 class Policy(Base):
     __tablename__ = "policy"
 
     policy_id = Column(Integer, primary_key=True, index=True)
     customer_id = Column(Integer, ForeignKey("customer.customer_id"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("product.product_id"), index=True)
     policy_number = Column(String(50), unique=True, nullable=False)
     coverage_type = Column(String(100))
     start_date = Column(DateTime)
     end_date = Column(DateTime)
 
+    # Parsed from the customer-specific Policy Schedule PDF (see
+    # policy_schedule_ingestion_service.py). excess/max_payout are the two
+    # fields the Phase 2 payout-estimate step needs directly; schedule_details
+    # holds everything else, since motor and home schedules don't share a
+    # field shape.
+    excess = Column(Numeric(12, 2))
+    max_payout = Column(Numeric(12, 2))
+    schedule_details = Column(JSONB)
+
     customer = relationship("Customer", back_populates="policies")
+    product = relationship("Product", back_populates="policies")
     claims = relationship("Claim", back_populates="policy")
     pds_documents = relationship("PDSDocument", back_populates="policy")
 
 
 class PDSDocument(Base):
+    """Holds two kinds of rows, distinguished by `version`:
+
+    - version="PDS": product-level, shared across every policy on that
+      product. `product_id` is set, `policy_id` is NULL.
+    - version="Policy Schedule": customer-specific, one per policy.
+      `policy_id` is set, `product_id` is NULL.
+    """
+
     __tablename__ = "pds_document"
 
     pds_id = Column(Integer, primary_key=True, index=True)
-    policy_id = Column(Integer, ForeignKey("policy.policy_id"), nullable=False)
+    policy_id = Column(Integer, ForeignKey("policy.policy_id"))
+    product_id = Column(Integer, ForeignKey("product.product_id"))
     version = Column(String(20))
     file_url = Column(Text)
     effective_date = Column(DateTime)
 
     policy = relationship("Policy", back_populates="pds_documents")
+    product = relationship("Product", back_populates="pds_documents")
 
 class ClaimStatus(str, enum.Enum):
     """ Allowed values for the status. """
