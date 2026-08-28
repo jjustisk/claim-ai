@@ -15,8 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from urllib.parse import quote
+
 from app.config import settings
 from app.connectors.storage import (
+    download_blob,
     list_images,
     list_pds_policies,
     list_videos,
@@ -119,6 +122,16 @@ def blob_url(container_name: str, blob_name: str) -> str:
     return f"https://{account_name()}.blob.core.windows.net/{container_name}/{blob_name}"
 
 
+def download_url(container_key: str, blob_name: str) -> str:
+    """Authenticated proxy link the test UI can actually open in a browser.
+
+    The storage account has public blob access disabled, so the raw
+    blob.core.windows.net URL from blob_url() 403s. This routes through
+    the app's own (assessor-gated) download endpoint instead.
+    """
+    return f"/ui/storage/api/{container_key}/download?name={quote(blob_name, safe='')}"
+
+
 def guess_content_type(
     filename: str,
     reported: str | None,
@@ -138,9 +151,18 @@ async def list_container_blobs(container_key: str) -> dict[str, Any]:
     return {
         "container": config.container_name,
         "items": [
-            {"name": name, "url": blob_url(config.container_name, name)} for name in names
+            {"name": name, "url": download_url(container_key, name)} for name in names
         ],
     }
+
+
+async def download_from_container(container_key: str, blob_name: str) -> tuple[bytes, str]:
+    config = get_container(container_key)
+    if config is None:
+        raise ValueError(f"Unknown container: {container_key}")
+    data = await download_blob(blob_name, container_name=config.container_name)
+    content_type, _ = mimetypes.guess_type(blob_name)
+    return data, content_type or "application/octet-stream"
 
 
 async def upload_to_container(

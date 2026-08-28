@@ -179,6 +179,10 @@ def customer_owns_claim_document(doc_id: int, customer_id: int) -> bool:
 
 
 def list_policy_documents(policy_id: int, customer_id: int) -> list[dict[str, Any]]:
+    """A policy's documents come from two places now: the product-level PDS
+    (shared across every policy on that product) and this policy's own
+    Policy Schedule row. See
+    .claude/plans/stage0-pds-ingestion-retrieval.md."""
     if not customer_owns_policy(policy_id, customer_id):
         return []
     conn = get_sync_connection()
@@ -186,12 +190,17 @@ def list_policy_documents(policy_id: int, customer_id: int) -> list[dict[str, An
         with conn.cursor() as cur:
             cur.execute(
                 """
+                SELECT d.pds_id, d.version, d.effective_date
+                FROM pds_document d
+                JOIN policy p ON p.product_id = d.product_id
+                WHERE p.policy_id = %s AND d.version = 'PDS'
+                UNION ALL
                 SELECT pds_id, version, effective_date
                 FROM pds_document
-                WHERE policy_id = %s
+                WHERE policy_id = %s AND version = 'Policy Schedule'
                 ORDER BY pds_id
                 """,
-                (policy_id,),
+                (policy_id, policy_id),
             )
             columns = [col[0] for col in cur.description]
             return [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -200,15 +209,21 @@ def list_policy_documents(policy_id: int, customer_id: int) -> list[dict[str, An
 
 
 def get_policy_document(pds_id: int, customer_id: int) -> dict[str, Any] | None:
+    """A document row is either product-scoped (PDS) or policy-scoped
+    (Schedule) — join on whichever FK is set for this row."""
     conn = get_sync_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT d.pds_id, d.policy_id, d.version, d.file_url, d.effective_date
+                SELECT d.pds_id, p.policy_id, d.version, d.file_url, d.effective_date
                 FROM pds_document d
-                JOIN policy p ON p.policy_id = d.policy_id
+                JOIN policy p ON (
+                    (d.product_id IS NOT NULL AND p.product_id = d.product_id)
+                    OR (d.policy_id IS NOT NULL AND p.policy_id = d.policy_id)
+                )
                 WHERE d.pds_id = %s AND p.customer_id = %s
+                LIMIT 1
                 """,
                 (pds_id, customer_id),
             )

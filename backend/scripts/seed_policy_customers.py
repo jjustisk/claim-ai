@@ -1,5 +1,10 @@
 """Seed customers, policies, PDS/schedule blobs, and draft claims from policy_docs.
 
+PDS documents are product-level (shared across every policy on that
+product), not per-policy — each is uploaded/created once and reused, per
+.claude/plans/stage0-pds-ingestion-retrieval.md. Policy Schedules stay
+per-policy as before.
+
 Run from backend/:
     python scripts/seed_policy_customers.py
 """
@@ -25,6 +30,13 @@ PDF_TYPE = "application/pdf"
 PERIOD_START = datetime(2026, 9, 1)
 PERIOD_END = datetime(2027, 8, 31, 23, 59, 59)
 EFFECTIVE = datetime(2026, 8, 26)
+
+# pds_file -> (product_name, insurance_type). Every policy referencing the
+# same pds_file shares the same product row and the same uploaded PDS blob.
+PDS_TO_PRODUCT: dict[str, tuple[str, str]] = {
+    "Home_Insurance_PDS_Full_Sample.pdf": ("Home Insurance", "property"),
+    "Motor_Vehicle_Insurance_PDS_Full_Sample.pdf": ("Motor Vehicle Insurance", "motor"),
+}
 
 CUSTOMERS = [
     {
@@ -94,8 +106,12 @@ def _read_pdf(filename: str) -> bytes:
     return path.read_bytes()
 
 
+def _slug(name: str) -> str:
+    return name.lower().replace(" ", "-").replace("&", "and")
+
+
 def _blob_name(email: str, policy_number: str, kind: str) -> str:
-    filename = "pds.pdf" if kind == "PDS" else "policy-schedule.pdf"
+    filename = "policy-schedule.pdf"
     return f"customers/{email}/{policy_number}/{filename}"
 
 
@@ -123,55 +139,84 @@ def upsert_customer(cur, *, name: str, email: str, address: str, password_hash: 
     return int(cur.fetchone()[0]), "created"
 
 
-def upsert_policy(cur, *, customer_id: int, policy_number: str, coverage_type: str) -> tuple[int, str]:
+def upsert_product(cur, *, product_name: str, insurance_type: str) -> tuple[int, str]:
+    cur.execute("SELECT product_id FROM product WHERE product_name = %s", (product_name,))
+    row = cur.fetchone()
+    if row:
+        return int(row[0]), "existing"
+    cur.execute(
+        "INSERT INTO product (product_name, insurance_type) VALUES (%s, %s) RETURNING product_id",
+        (product_name, insurance_type),
+    )
+    return int(cur.fetchone()[0]), "created"
+
+
+def upsert_product_pds_document(cur, *, product_id: int, file_url: str) -> str:
+    cur.execute(
+        "SELECT pds_id FROM pds_document WHERE product_id = %s AND version = 'PDS'",
+        (product_id,),
+    )
+    row = cur.fetchone()
+    if row:
+        cur.execute(
+            "UPDATE pds_document SET file_url = %s, effective_date = %s WHERE pds_id = %s",
+            (file_url, EFFECTIVE, row[0]),
+        )
+        return "updated"
+    cur.execute(
+        """
+        INSERT INTO pds_document (product_id, version, file_url, effective_date)
+        VALUES (%s, 'PDS', %s, %s)
+        """,
+        (product_id, file_url, EFFECTIVE),
+    )
+    return "created"
+
+
+def upsert_policy(
+    cur, *, customer_id: int, product_id: int, policy_number: str, coverage_type: str
+) -> tuple[int, str]:
     cur.execute("SELECT policy_id FROM policy WHERE policy_number = %s", (policy_number,))
     row = cur.fetchone()
     if row:
         cur.execute(
             """
             UPDATE policy
-            SET customer_id = %s, coverage_type = %s, start_date = %s, end_date = %s
+            SET customer_id = %s, product_id = %s, coverage_type = %s, start_date = %s, end_date = %s
             WHERE policy_id = %s
             """,
-            (customer_id, coverage_type, PERIOD_START, PERIOD_END, row[0]),
+            (customer_id, product_id, coverage_type, PERIOD_START, PERIOD_END, row[0]),
         )
         return int(row[0]), "updated"
     cur.execute(
         """
-        INSERT INTO policy (customer_id, policy_number, coverage_type, start_date, end_date)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO policy (customer_id, product_id, policy_number, coverage_type, start_date, end_date)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING policy_id
         """,
-        (customer_id, policy_number, coverage_type, PERIOD_START, PERIOD_END),
+        (customer_id, product_id, policy_number, coverage_type, PERIOD_START, PERIOD_END),
     )
     return int(cur.fetchone()[0]), "created"
 
 
-def upsert_pds_document(cur, *, policy_id: int, version: str, file_url: str) -> str:
+def upsert_schedule_document(cur, *, policy_id: int, file_url: str) -> str:
     cur.execute(
-        """
-        SELECT pds_id FROM pds_document
-        WHERE policy_id = %s AND version = %s
-        """,
-        (policy_id, version),
+        "SELECT pds_id FROM pds_document WHERE policy_id = %s AND version = 'Policy Schedule'",
+        (policy_id,),
     )
     row = cur.fetchone()
     if row:
         cur.execute(
-            """
-            UPDATE pds_document
-            SET file_url = %s, effective_date = %s
-            WHERE pds_id = %s
-            """,
+            "UPDATE pds_document SET file_url = %s, effective_date = %s WHERE pds_id = %s",
             (file_url, EFFECTIVE, row[0]),
         )
         return "updated"
     cur.execute(
         """
         INSERT INTO pds_document (policy_id, version, file_url, effective_date)
-        VALUES (%s, %s, %s, %s)
+        VALUES (%s, 'Policy Schedule', %s, %s)
         """,
-        (policy_id, version, file_url, EFFECTIVE),
+        (policy_id, file_url, EFFECTIVE),
     )
     return "created"
 
@@ -249,17 +294,24 @@ def replace_claim_policy_docs(cur, *, claim_id: int, documents: list[tuple[str, 
         )
 
 
-async def upload_policy_docs(email: str, policy_number: str, pds_file: str, schedule_file: str) -> dict[str, str]:
-    urls: dict[str, str] = {}
-    for kind, filename in (("PDS", pds_file), ("Policy Schedule", schedule_file)):
-        blob_name = _blob_name(email, policy_number, kind)
-        urls[kind] = await upload_pds_policy(
-            blob_name,
-            _read_pdf(filename),
-            content_type=PDF_TYPE,
-            overwrite=True,
-        )
-    return urls
+async def upload_product_pds(product_name: str, pds_file: str) -> str:
+    blob_name = f"products/{_slug(product_name)}/pds.pdf"
+    return await upload_pds_policy(
+        blob_name,
+        _read_pdf(pds_file),
+        content_type=PDF_TYPE,
+        overwrite=True,
+    )
+
+
+async def upload_schedule(email: str, policy_number: str, schedule_file: str) -> str:
+    blob_name = _blob_name(email, policy_number, "Policy Schedule")
+    return await upload_pds_policy(
+        blob_name,
+        _read_pdf(schedule_file),
+        content_type=PDF_TYPE,
+        overwrite=True,
+    )
 
 
 async def seed() -> None:
@@ -271,6 +323,7 @@ async def seed() -> None:
     password_hash = hash_password(PASSWORD)
     conn = get_sync_connection()
     summary: list[str] = []
+    product_pds_url_cache: dict[str, str] = {}
     try:
         with conn.cursor() as cur:
             for customer in CUSTOMERS:
@@ -285,30 +338,36 @@ async def seed() -> None:
                     f"customer {customer['email']} id={customer_id} ({customer_action})"
                 )
                 for policy in customer["policies"]:
+                    product_name, insurance_type = PDS_TO_PRODUCT[policy["pds_file"]]
+                    product_id, product_action = upsert_product(
+                        cur, product_name=product_name, insurance_type=insurance_type
+                    )
+
+                    if product_name not in product_pds_url_cache:
+                        product_pds_url_cache[product_name] = await upload_product_pds(
+                            product_name, policy["pds_file"]
+                        )
+                        pds_action = upsert_product_pds_document(
+                            cur, product_id=product_id, file_url=product_pds_url_cache[product_name]
+                        )
+                    else:
+                        pds_action = "reused"
+
                     policy_id, policy_action = upsert_policy(
                         cur,
                         customer_id=customer_id,
+                        product_id=product_id,
                         policy_number=policy["policy_number"],
                         coverage_type=policy["coverage_type"],
                     )
-                    urls = await upload_policy_docs(
-                        customer["email"],
-                        policy["policy_number"],
-                        policy["pds_file"],
-                        policy["schedule_file"],
+
+                    schedule_url = await upload_schedule(
+                        customer["email"], policy["policy_number"], policy["schedule_file"]
                     )
-                    pds_action = upsert_pds_document(
-                        cur,
-                        policy_id=policy_id,
-                        version="PDS",
-                        file_url=urls["PDS"],
+                    schedule_action = upsert_schedule_document(
+                        cur, policy_id=policy_id, file_url=schedule_url
                     )
-                    schedule_action = upsert_pds_document(
-                        cur,
-                        policy_id=policy_id,
-                        version="Policy Schedule",
-                        file_url=urls["Policy Schedule"],
-                    )
+
                     claim_id, reference, claim_action = upsert_draft_claim(
                         cur,
                         customer_id=customer_id,
@@ -319,12 +378,15 @@ async def seed() -> None:
                     replace_claim_policy_docs(
                         cur,
                         claim_id=claim_id,
-                        documents=list(urls.items()),
+                        documents=[
+                            ("PDS", product_pds_url_cache[product_name]),
+                            ("Policy Schedule", schedule_url),
+                        ],
                     )
                     summary.append(
                         f"  policy {policy['policy_number']} id={policy_id} ({policy_action}); "
-                        f"pds={pds_action}; schedule={schedule_action}; "
-                        f"draft {reference} id={claim_id} ({claim_action})"
+                        f"product={product_name} ({product_action}); pds={pds_action}; "
+                        f"schedule={schedule_action}; draft {reference} id={claim_id} ({claim_action})"
                     )
         conn.commit()
     except Exception:

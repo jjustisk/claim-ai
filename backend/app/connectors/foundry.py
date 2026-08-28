@@ -22,16 +22,19 @@ from app.config import settings
 from app.connectors.secrets import get_azure_credential
 
 if TYPE_CHECKING:
-    from openai import OpenAI
+    from openai import AzureOpenAI, OpenAI
 
 # Model IDs in the Azure AI Foundry catalog.
 GPT_MODEL = "gpt-5.5"
 CLAUDE_MODEL = "claude-opus-4-8"
 ROUTER_DEPLOYMENT = "model-router"
+EMBEDDING_MODEL = "text-embedding-3-large"
+EMBEDDING_API_VERSION = "2024-10-21"
 
 _project_client: AIProjectClient | None = None
 _gpt_client: OpenAI | None = None
 _claude_client: AnthropicFoundry | None = None
+_embedding_client: AzureOpenAI | None = None
 _credential = None
 
 
@@ -112,6 +115,48 @@ def get_claude_deployment() -> str:
     return settings.foundry_claude_deployment or get_router_deployment()
 
 
+def get_embedding_deployment() -> str:
+    """Return the Foundry deployment name for the embedding model."""
+    return settings.foundry_embedding_deployment or EMBEDDING_MODEL
+
+
+def get_embedding_client() -> AzureOpenAI:
+    """Return a client for the embeddings deployment.
+
+    Unlike chat, the project's unified `/openai/v1/` endpoint (used by
+    get_gpt_client()) 404s on `/embeddings` — confirmed by hitting it
+    directly. The classic Azure OpenAI REST path
+    (`/openai/deployments/{name}/embeddings?api-version=...`) on the
+    services endpoint works, so embeddings get their own client rather than
+    reusing get_gpt_client().
+    """
+    global _embedding_client
+    if _embedding_client is None:
+        from openai import AzureOpenAI
+
+        token_provider = get_bearer_token_provider(
+            _get_credential(),
+            "https://ai.azure.com/.default",
+        )
+        _embedding_client = AzureOpenAI(
+            azure_endpoint=_services_endpoint(),
+            azure_ad_token_provider=token_provider,
+            api_version=EMBEDDING_API_VERSION,
+        )
+    return _embedding_client
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a batch of strings via the Foundry embedding deployment."""
+    if not texts:
+        return []
+    response = get_embedding_client().embeddings.create(
+        model=get_embedding_deployment(),
+        input=texts,
+    )
+    return [item.embedding for item in response.data]
+
+
 def uses_claude_router() -> bool:
     """True when Claude requests go through model-router instead of /anthropic."""
     return get_claude_deployment() == get_router_deployment()
@@ -160,8 +205,9 @@ def warm_claude_client() -> None:
 
 def reset_foundry_clients() -> None:
     """Clear cached clients (useful in tests)."""
-    global _project_client, _gpt_client, _claude_client, _credential
+    global _project_client, _gpt_client, _claude_client, _embedding_client, _credential
     _project_client = None
     _gpt_client = None
     _claude_client = None
+    _embedding_client = None
     _credential = None
