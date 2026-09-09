@@ -19,12 +19,9 @@ Chunking approach, tuned against the actual sample PDS documents:
 - The table-of-contents table and known non-coverage sections (motor PDS's
   "Insurance Schedule template", both PDS's appendices) are excluded from
   the corpus entirely — they're operational content, not coverage rules.
-- Each chunk is tagged with a chunk_type ("coverage", "exclusion", or
-  "definition") based on which top-level section it falls under, or
-  whether it's the Term | Meaning table. Retrieval uses this to always
-  check for a relevant exclusion alongside a coverage match, rather than
-  relying on embedding similarity alone to surface it (an exclusion's
-  wording is often nothing like the damage description that triggers it).
+- Each chunk is tagged with a chunk_type: "coverage", "exclusion", or
+  "definition", based on its top-level section or whether it's the
+  Term | Meaning table.
 """
 
 from __future__ import annotations
@@ -85,16 +82,7 @@ def _format_table_chunk(table: list[list[str | None]]) -> str:
 
 
 def extract_chunks(pdf_bytes: bytes) -> list[dict]:
-    """Parse a PDS PDF into a list of {section_ref, title, text, chunk_type} chunks.
-
-    chunk_type is one of "coverage" (default), "exclusion" (the chunk falls
-    under a top-level section whose title names it as an exclusions
-    section — e.g. "5. Exclusions - what is not covered"), or "definition"
-    (the Term | Meaning table). Retrieval uses this to always surface the
-    relevant exclusion(s) alongside a coverage match, since a damage
-    description is often semantically close to the covering clause but not
-    to the exclusion that carves an exception out of it.
-    """
+    """Parse a PDS PDF into a list of {section_ref, title, text, chunk_type} chunks."""
     chunks: list[dict] = []
     section_ref: str | None = None
     title: str | None = None

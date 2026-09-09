@@ -18,32 +18,19 @@ from enum import Enum
 from app.connectors.chromadb_store import get_pds_clauses_collection
 from app.connectors.foundry import embed_texts
 
-# Parsed {term: meaning} pairs are cached per product — the definitions
-# table doesn't change during a running process, no need to re-fetch and
-# re-parse it on every single query.
+# {term: meaning} pairs, cached per product_id.
 _definitions_cache: dict[int, list[tuple[str, str]]] = {}
 
 DEFAULT_MAX_K = 5
 DEFAULT_GAP_THRESHOLD = 0.15
 
-# Absolute distance thresholds (cosine distance, explicitly configured on the
-# collection in chromadb_store.py — lower = more similar). Calibrated against
-# real queries on the ingested sample PDS documents (see .claude commit
-# history / PR discussion for the sample distances): a strong verbatim-ish
-# match scored ~0.28, a genuinely ambiguous one ~0.44, a genuinely unrelated
-# one ~0.84 — small sample, revisit if real usage disagrees.
+# Absolute cosine-distance thresholds for classifying a retrieval.
 CORRECT_DISTANCE = 0.30 # top match closer than this -> confidently relevant
 INCORRECT_DISTANCE = 0.45 # top match farther than this -> confidently irrelevant
 
 BROADENED_MAX_K = 10 # if top match is confidently irrelevant, broaden search to this many results
 
-# Looser than CORRECT_DISTANCE/INCORRECT_DISTANCE on purpose — this is a
-# "worth showing" bar, not a confidence gate. Exclusion clauses are short,
-# dense legal text with little vocabulary overlap with a damage description,
-# so even a deliberately on-topic query only scored ~0.66 in testing, while
-# clearly unrelated queries scored ~0.86 — a real but noisy gap. Set loose:
-# a false positive here just means a human glances at an exclusion that
-# turns out not to apply; a false negative means a missed exclusion.
+# Distance bar for surfacing a linked exclusion clause.
 LINKED_EXCLUSION_DISTANCE = 0.75
 
 class RetrievalAction(str, Enum):
@@ -78,7 +65,10 @@ def retrieve_clauses(
             "needs_human_review": True,
         }
 
-    matches = _search(query_text, product_id=product_id, max_k=max_k)
+    # Embed once, reuse for every _search()/_linked_exclusions() call below.
+    [embedding] = embed_texts([query_text])
+
+    matches = _search(embedding, product_id=product_id, max_k=max_k)
     if not matches:
         return {
             "action": RetrievalAction.INCORRECT,
@@ -95,20 +85,14 @@ def retrieve_clauses(
         return {
             "action": action,
             "matches": refined,
-            "linked_exclusions": _linked_exclusions(query_text, product_id=product_id),
-            # Scan the pre-refine text, not `refined` — refinement can (and
-            # did, in testing) drop the exact sentence a defined term was in.
+            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
             "linked_definitions": _linked_definitions(matches[:1], product_id=product_id),
             "needs_human_review": False,
         }
 
     if action is RetrievalAction.AMBIGUOUS:
-        # Neither confidently correct nor confidently wrong: combine the
-        # refined internal top match with a broadened-corpus search (the
-        # PDS-corpus stand-in for CRAG's web-search supplement). Escalate
-        # only if the broadened search doesn't clear the bar either.
         refined_top = _refine(query_text, matches[:1])
-        broadened = _search(query_text, product_id=None, max_k=BROADENED_MAX_K)
+        broadened = _search(embedding, product_id=None, max_k=BROADENED_MAX_K)
         broadened_action = _classify(broadened[0]["distance"]) if broadened else RetrievalAction.INCORRECT
 
         if broadened_action is RetrievalAction.INCORRECT:
@@ -116,7 +100,7 @@ def retrieve_clauses(
             return {
                 "action": action,
                 "matches": kept,
-                "linked_exclusions": _linked_exclusions(query_text, product_id=product_id),
+                "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
                 "linked_definitions": _linked_definitions(kept, product_id=product_id),
                 "needs_human_review": True,
             }
@@ -125,18 +109,14 @@ def retrieve_clauses(
         return {
             "action": action,
             "matches": combined,
-            "linked_exclusions": _linked_exclusions(query_text, product_id=product_id),
-            # Scan the pre-refine internal match (matches[:1]) alongside the
-            # (already-raw) broadened results, not `combined` — same reason
-            # as the Correct branch above.
+            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
             "linked_definitions": _linked_definitions(matches[:1] + broadened, product_id=product_id),
             "needs_human_review": False,
         }
 
-    # INCORRECT: the original match is discarded (per CRAG) rather than
-    # combined with what follows. Broaden once within the PDS corpus (drop
-    # product filter, widen k) then reclassify.
-    broadened = _search(query_text, product_id=None, max_k=BROADENED_MAX_K)
+    # INCORRECT: broaden once within the PDS corpus (drop product filter,
+    # widen k) then reclassify.
+    broadened = _search(embedding, product_id=None, max_k=BROADENED_MAX_K)
     broadened_action = _classify(broadened[0]["distance"]) if broadened else RetrievalAction.INCORRECT
 
     if broadened_action is RetrievalAction.CORRECT:
@@ -144,7 +124,7 @@ def retrieve_clauses(
         return {
             "action": RetrievalAction.CORRECT,
             "matches": refined,
-            "linked_exclusions": _linked_exclusions(query_text, product_id=product_id),
+            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
             "linked_definitions": _linked_definitions(broadened[:1], product_id=product_id),
             "needs_human_review": False,
         }
@@ -154,12 +134,12 @@ def retrieve_clauses(
         return {
             "action": RetrievalAction.AMBIGUOUS,
             "matches": kept,
-            "linked_exclusions": _linked_exclusions(query_text, product_id=product_id),
+            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
             "linked_definitions": _linked_definitions(kept, product_id=product_id),
             "needs_human_review": False,
         }
 
-    # Still incorrect after broadening: escalate to a human instead of guessing.
+    # Still incorrect after broadening: escalate to a human.
     return {
         "action": RetrievalAction.INCORRECT,
         "matches": matches[:max_k],
@@ -169,8 +149,7 @@ def retrieve_clauses(
     }
 
 
-def _search(query_text: str, *, product_id: int | None, max_k: int) -> list[dict]:
-    [embedding] = embed_texts([query_text])
+def _search(embedding: list[float], *, product_id: int | None, max_k: int) -> list[dict]:
     collection = get_pds_clauses_collection()
     where = {"product_id": product_id} if product_id is not None else None
     result = collection.query(query_embeddings=[embedding], where=where, n_results=max_k)
@@ -186,12 +165,9 @@ def _search(query_text: str, *, product_id: int | None, max_k: int) -> list[dict
         for i, d, m, dist in zip(ids, documents, metadata, distances)
     ]
 
-def _linked_exclusions(query_text: str, *, product_id: int) -> list[dict]:
-    """Always check whether an exclusion clause is relevant enough to
-    surface alongside a coverage match — finding the covering clause
-    doesn't mean an applicable exclusion wasn't missed, since exclusion
-    wording rarely overlaps with a damage description's vocabulary."""
-    [embedding] = embed_texts([query_text])
+def _linked_exclusions(embedding: list[float], *, product_id: int) -> list[dict]:
+    """Return exclusion clauses for this product that are within
+    LINKED_EXCLUSION_DISTANCE of the given embedding."""
     collection = get_pds_clauses_collection()
     result = collection.query(
         query_embeddings=[embedding],
@@ -239,11 +215,8 @@ def _get_definitions(product_id: int) -> list[tuple[str, str]]:
 
 
 def _linked_definitions(matches: list[dict], *, product_id: int) -> list[dict]:
-    """Surface the meaning of any defined term referenced in the matched
-    clause(s). Insurance PDS documents use their defined terms verbatim
-    wherever they apply, so a literal whole-word match is the right tool
-    here — definitions exist to be looked up by exact term, not guessed at
-    by semantic similarity."""
+    """Return {term, meaning} for any defined term referenced (whole-word
+    match) in the given matches' text."""
     text = " ".join(m["text"] for m in matches)
     if not text:
         return []
@@ -277,9 +250,7 @@ def _refine(query_text: str, matches: list[dict]) -> list[dict]:
     return refined
 
 def _combine(internal: list[dict], external: list[dict], max_k: int) -> list[dict]:
-    """Merge the refined internal top match with broadened-search results
-    (CRAG's Ambiguous-branch combination step), de-duplicating by id and
-    keeping the internal match first."""
+    """Merge two match lists, de-duplicating by id, keeping internal matches first."""
     seen_ids = {m["id"] for m in internal}
     combined = list(internal)
     for m in external:

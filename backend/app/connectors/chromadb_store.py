@@ -36,16 +36,7 @@ def get_collection(name: str | None = None) -> Collection:
 
 
 def get_pds_clauses_collection() -> Collection:
-    """Return the shared collection holding chunked PDS clauses.
-
-    Explicitly created with cosine distance (ChromaDB defaults to squared
-    L2 otherwise, which has a very different — and much larger — numeric
-    range). CRAG's absolute relevance thresholds in policy_retrieval_service
-    assume cosine distance, so this must stay pinned to "cosine": the HNSW
-    space is set at collection-creation time and can't be changed after,
-    so if this collection already exists with the wrong space, it needs to
-    be dropped and re-ingested rather than just having this line added.
-    """
+    """Return the shared collection holding chunked PDS clauses, using cosine distance."""
     return get_chroma_client().get_or_create_collection(
         name=PDS_CLAUSES_COLLECTION,
         metadata={"hnsw:space": "cosine"},
