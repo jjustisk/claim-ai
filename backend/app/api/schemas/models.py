@@ -187,6 +187,7 @@ class Claim(Base):
     policy = relationship("Policy", back_populates="claims")
     documents = relationship("ClaimDocument", back_populates="claim")
     ai_decisions = relationship("AIDecision", back_populates="claim")
+    damage_assessments = relationship("ClaimDamageAssessment", back_populates="claim")
     reviews = relationship("Review", back_populates="claim")
     notifications = relationship("Notification", back_populates="claim")
     motor_detail = relationship(
@@ -381,6 +382,24 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     ai_decision = relationship("AIDecision", back_populates="audit_logs")
+
+
+class ClaimDamageAssessment(Base):
+    __tablename__ = "claim_damage_assessment"
+
+    assessment_id = Column(Integer, primary_key=True, index=True)
+    claim_id = Column(Integer, ForeignKey("claim.claim_id"), nullable=False)
+    images_assessable = Column(Boolean, nullable=False)
+    damage_description = Column(Text, nullable=False)
+    reasoning = Column(Text, nullable=False)
+    damage_type = Column(String(20), nullable=False)
+    severity = Column(String(20), nullable=False)
+    images_available = Column(Integer, nullable=False)
+    images_assessed = Column(Integer, nullable=False)
+    model = Column(String(50))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    claim = relationship("Claim", back_populates="damage_assessments")
 
 
 class Review(Base):
