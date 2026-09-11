@@ -97,6 +97,23 @@ INDEX_HTML = """<!DOCTYPE html>
       line-height: 1.4;
     }
     #empty { color: #64748b; font-size: 0.9rem; }
+    h2.linked-heading {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: #92400e;
+      margin: 1.25rem 0 0.5rem;
+    }
+    .linked-exclusion { border-left-color: #d97706; }
+    .definition {
+      background: #fff;
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.5rem;
+      border-left: 4px solid #7c3aed;
+    }
+    .definition .term { font-weight: 700; color: #7c3aed; }
   </style>
 </head>
 <body>
@@ -180,11 +197,16 @@ INDEX_HTML = """<!DOCTYPE html>
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Search failed");
 
+        const banner = data.needs_human_review
+          ? `<p style="color:#991b1b;font-weight:600;">action: ${data.action} — flagged for human review</p>`
+          : `<p style="color:#555;">action: ${data.action}</p>`;
+
         if (!data.results.length) {
-          resultsEl.innerHTML = "<p id=\\"empty\\">No results.</p>";
+          resultsEl.innerHTML = banner + "<p id=\\"empty\\">No results.</p>";
           return;
         }
-        resultsEl.innerHTML = data.results
+
+        const resultsHtml = data.results
           .map(
             (r) => `
               <div class="result">
@@ -194,6 +216,35 @@ INDEX_HTML = """<!DOCTYPE html>
               </div>`
           )
           .join("");
+
+        const exclusionsHtml = data.linked_exclusions.length
+          ? `<h2 class="linked-heading">Linked exclusions</h2>` +
+            data.linked_exclusions
+              .map(
+                (r) => `
+                  <div class="result linked-exclusion">
+                    <span class="ref">${escapeHtml(r.section_ref || "")}</span>
+                    <span class="dist">distance ${r.distance.toFixed(4)}</span>
+                    <pre>${escapeHtml(r.text)}</pre>
+                  </div>`
+              )
+              .join("")
+          : "";
+
+        const definitionsHtml = data.linked_definitions.length
+          ? `<h2 class="linked-heading">Referenced definitions</h2>` +
+            data.linked_definitions
+              .map(
+                (d) => `
+                  <div class="definition">
+                    <span class="term">${escapeHtml(d.term)}</span>
+                    <div>${escapeHtml(d.meaning)}</div>
+                  </div>`
+              )
+              .join("")
+          : "";
+
+        resultsEl.innerHTML = banner + resultsHtml + exclusionsHtml + definitionsHtml;
       } catch (err) {
         setError(err.message);
         resultsEl.innerHTML = "";
@@ -244,20 +295,31 @@ def query(
     if not text.strip():
         raise HTTPException(400, "text is required.")
     try:
-        results = retrieve_clauses(
+        outcome = retrieve_clauses(
             text, product_id=product_id, max_k=max_k, gap_threshold=gap_threshold
         )
     except Exception as exc:
         raise HTTPException(500, f"Retrieval failed: {exc}") from exc
     return JSONResponse(
         {
+            "action": outcome["action"].value,
+            "needs_human_review": outcome["needs_human_review"],
             "results": [
                 {
                     "section_ref": r["metadata"].get("section_ref"),
                     "distance": r["distance"],
                     "text": r["text"],
                 }
-                for r in results
-            ]
+                for r in outcome["matches"]
+            ],
+            "linked_exclusions": [
+                {
+                    "section_ref": r["metadata"].get("section_ref"),
+                    "distance": r["distance"],
+                    "text": r["text"],
+                }
+                for r in outcome["linked_exclusions"]
+            ],
+            "linked_definitions": outcome["linked_definitions"],
         }
     )

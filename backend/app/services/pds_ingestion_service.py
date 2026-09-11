@@ -19,6 +19,9 @@ Chunking approach, tuned against the actual sample PDS documents:
 - The table-of-contents table and known non-coverage sections (motor PDS's
   "Insurance Schedule template", both PDS's appendices) are excluded from
   the corpus entirely — they're operational content, not coverage rules.
+- Each chunk is tagged with a chunk_type: "coverage", "exclusion", or
+  "definition", based on its top-level section or whether it's the
+  Term | Meaning table.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ _TOP_HEADING = re.compile(r"^(\d+)\.\s+(.+)$")
 _APPENDIX_HEADING = re.compile(r"^Appendix\s+[A-Z]\s*-\s*(.+)$", re.IGNORECASE)
 
 _EXCLUDE_TITLE_KEYWORDS = ("schedule template", "schedule structure")
+_EXCLUSION_TITLE_KEYWORDS = ("exclusion",)
 
 # Running page headers/footers repeat on every page and otherwise leak into
 # whichever chunk happens to be open when the page breaks.
@@ -65,13 +69,20 @@ def _table_is_toc(table: list[list[str | None]]) -> bool:
     return "section" in header and "topic" in header
 
 
+def _table_is_definitions(table: list[list[str | None]]) -> bool:
+    if not table:
+        return False
+    header = [str(cell or "").strip().lower() for cell in table[0]]
+    return "term" in header and "meaning" in header
+
+
 def _format_table_chunk(table: list[list[str | None]]) -> str:
     lines = [" | ".join(str(cell or "").strip() for cell in row) for row in table]
     return "\n".join(line for line in lines if line.strip(" |"))
 
 
 def extract_chunks(pdf_bytes: bytes) -> list[dict]:
-    """Parse a PDS PDF into a list of {section_ref, title, text} chunks."""
+    """Parse a PDS PDF into a list of {section_ref, title, text, chunk_type} chunks."""
     chunks: list[dict] = []
     section_ref: str | None = None
     title: str | None = None
@@ -79,6 +90,7 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
     excluded = False
     in_appendix = False  # one-way latch: once True, never reset (see below)
     last_top_level_ref: str | None = None
+    chunk_type = "coverage"  # reset whenever a new top-level heading is seen
 
     def flush() -> None:
         nonlocal body
@@ -90,6 +102,7 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
                         "section_ref": section_ref,
                         "title": title or "",
                         "text": f"{section_ref} {title}\n{text}".strip(),
+                        "chunk_type": chunk_type,
                     }
                 )
         body = []
@@ -139,6 +152,12 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
                     section_ref, title = f"{num}.", heading_title
                     excluded = _is_excluded_title(heading_title)
                     last_top_level_ref = section_ref
+                    lowered_title = heading_title.lower()
+                    chunk_type = (
+                        "exclusion"
+                        if any(kw in lowered_title for kw in _EXCLUSION_TITLE_KEYWORDS)
+                        else "coverage"
+                    )
                     continue
                 if appendix_match:
                     flush()
@@ -161,6 +180,7 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
                                 "section_ref": section_ref or last_top_level_ref or "",
                                 "title": title or "",
                                 "text": text,
+                                "chunk_type": "definition" if _table_is_definitions(table) else chunk_type,
                             }
                         )
 
@@ -185,6 +205,7 @@ def ingest_product_pds(*, pds_id: int, product_id: int, version: str, pdf_bytes:
             "version": version,
             "section_ref": c["section_ref"],
             "chunk_index": i,
+            "chunk_type": c["chunk_type"],
         }
         for i, c in enumerate(chunks)
     ]

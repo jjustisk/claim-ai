@@ -36,8 +36,11 @@ def get_collection(name: str | None = None) -> Collection:
 
 
 def get_pds_clauses_collection() -> Collection:
-    """Return the shared collection holding chunked PDS clauses."""
-    return get_collection(PDS_CLAUSES_COLLECTION)
+    """Return the shared collection holding chunked PDS clauses, using cosine distance."""
+    return get_chroma_client().get_or_create_collection(
+        name=PDS_CLAUSES_COLLECTION,
+        metadata={"hnsw:space": "cosine"},
+    )
 
 
 def reset_chroma_client() -> None:
