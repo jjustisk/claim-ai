@@ -17,8 +17,11 @@ Chunking approach, tuned against the actual sample PDS documents:
   (uses the last heading seen so far on that page), which is an accepted
   simplification for now.
 - The table-of-contents table and known non-coverage sections (motor PDS's
-  "Insurance Schedule template", both PDS's appendices) are excluded from
-  the corpus entirely — they're operational content, not coverage rules.
+  "Insurance Schedule template", both PDS's "Example claims", both PDS's
+  appendices) are excluded from the corpus entirely — they're operational
+  or illustrative content, not binding coverage rules, and worked examples
+  embed closer to plain-language queries than the formal clauses do,
+  displacing the actual citable text in retrieval.
 - Each chunk is tagged with a chunk_type: "coverage", "exclusion", or
   "definition", based on its top-level section or whether it's the
   Term | Meaning table.
@@ -39,7 +42,7 @@ _SUB_HEADING = re.compile(r"^(\d+)\.(\d+)\s+(.+)$")
 _TOP_HEADING = re.compile(r"^(\d+)\.\s+(.+)$")
 _APPENDIX_HEADING = re.compile(r"^Appendix\s+[A-Z]\s*-\s*(.+)$", re.IGNORECASE)
 
-_EXCLUDE_TITLE_KEYWORDS = ("schedule template", "schedule structure")
+_EXCLUDE_TITLE_KEYWORDS = ("schedule template", "schedule structure", "example claims", "illustrative claim scenarios")
 _EXCLUSION_TITLE_KEYWORDS = ("exclusion",)
 
 # Running page headers/footers repeat on every page and otherwise leak into

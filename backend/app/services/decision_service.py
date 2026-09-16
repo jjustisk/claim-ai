@@ -2,11 +2,18 @@
 Call 2, and CRAG-retrieved clauses. No second model yet (Claude Validation
 deferred - region-limited); the composite formula's claude_agreement term
 is dropped and the remaining weights rescaled to still sum to 1.0.
+
+Self-consistency (Wang et al. 2022, arXiv:2203.11171; arXiv:2510.17472 for
+reasoning models specifically): only triggered for moderate-band results
+(including those capped down from "high" by the retrieval flag below) -
+sample a few more times, take the majority coverage_decision, average the
+adjusted scores across whichever samples agree with it.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -20,7 +27,7 @@ from app.services.damage_description_services import get_latest_assessment
 from app.services.policy_retrieval_service import retrieve_clauses
 
 FRAUD_STUB = 0.0
-SEED = 42
+SELF_CONSISTENCY_SAMPLES = 3  # only for moderate-band results
 
 W_CONSISTENCY = 0.375
 W_RAG = 0.3125
@@ -79,12 +86,30 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
 
     composite = _composite_score(parsed.adjusted_consistency, parsed.adjusted_rag, FRAUD_STUB)
     band = _band(composite)
+
+    # CRAG flagged the retrieval itself as unreliable (needs_human_review) -
+    # confirmed via eval that this isn't cleanly fixable by re-tuning the
+    # retrieval distance threshold (correct- and wrong-retrieval distances
+    # overlap in this corpus), so it's not used as a hard gate. But it also
+    # shouldn't be silently ignored: a flagged retrieval never earns "high",
+    # regardless of the model's own self-rated adjusted_consistency/adjusted_rag,
+    # so it can't present as confidently auto-approved on a citation CRAG
+    # itself couldn't confirm.
+    band, retrieval_capped = _cap_band_for_retrieval(band, retrieval)
+
+    sc_info = {"samples": 1, "agreement": None}
+    if band == "moderate":
+        parsed, composite, band, sc_info = await _self_consistent_decision(prompt, parsed)
+        band, capped_again = _cap_band_for_retrieval(band, retrieval)
+        retrieval_capped = retrieval_capped or capped_again
+
     decision = DECISION_REFER if band =="low" else parsed.coverage_decision.value
     customer_explanation = REFERRED_CUSTOMER_MESSAGE if band == "low" else parsed.customer_explanation
 
     memo = _build_memo(
         claim, assessment, decision=decision, reasoning=parsed.reasoning, retrieval=retrieval,
-        consistency=consistency, composite=composite, band=band,
+        consistency=consistency, composite=composite, band=band, retrieval_capped=retrieval_capped,
+        sc_info=sc_info,
         )
 
     record = await _persist(
@@ -98,6 +123,7 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
             "damage_type": assessment.damage_type,
             "severity": assessment.severity,
             "retrieval_action": retrieval["action"],
+            "retrieval_needs_human_review": retrieval["needs_human_review"],
             "consistency_flag": consistency.consistency_flag,
         },
         output_payload={
@@ -106,6 +132,9 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
             "coverage_decision": parsed.coverage_decision.value,
             "cited_clause_ref": parsed.cited_clause_ref,
             "reasoning": parsed.reasoning,
+            "retrieval_capped": retrieval_capped,
+            "self_consistency_samples": sc_info["samples"],
+            "self_consistency_agreement": sc_info["agreement"],
         },
         model_name=get_gpt_deployment(),
     )
@@ -124,6 +153,40 @@ def _band(composite: float) -> str:
     if composite >= 70:
         return "moderate"
     return "low"
+
+
+def _cap_band_for_retrieval(band: str, retrieval: dict) -> tuple[str, bool]:
+    if retrieval["needs_human_review"] and band == "high":
+        return "moderate", True
+    return band, False
+
+
+async def _self_consistent_decision(prompt: str, first: Decision) -> tuple[Decision, float, str, dict]:
+    """Only called on a moderate-band result. Samples SELF_CONSISTENCY_SAMPLES-1
+    more times and takes the majority coverage_decision, averaging adjusted
+    scores across whichever samples agree with it. The representative sample's
+    text (reasoning/citation/customer_explanation) stands in for the group."""
+    extra = await asyncio.gather(
+        *[asyncio.to_thread(_call_model, prompt) for _ in range(SELF_CONSISTENCY_SAMPLES - 1)]
+    )
+    samples = [first, *extra]
+
+    votes = Counter(s.coverage_decision for s in samples)
+    majority_decision, majority_count = votes.most_common(1)[0]
+
+    agreeing = [s for s in samples if s.coverage_decision == majority_decision]
+    avg_consistency = sum(s.adjusted_consistency for s in agreeing) / len(agreeing)
+    avg_rag = sum(s.adjusted_rag for s in agreeing) / len(agreeing)
+    composite = _composite_score(avg_consistency, avg_rag, FRAUD_STUB)
+    band = _band(composite)
+
+    representative = min(
+        agreeing,
+        key=lambda s: abs(s.adjusted_consistency - avg_consistency) + abs(s.adjusted_rag - avg_rag),
+    )
+    sc_info = {"samples": len(samples), "agreement": f"{majority_count}/{len(samples)}"}
+    return representative, composite, band, sc_info
+
 
 async def _refer(db: AsyncSession, claim_id: int, reason: str) -> AIDecision:
     record = await _persist(
@@ -207,10 +270,20 @@ def _build_prompt(assessment: ClaimDamageAssessment, retrieval: dict, consistenc
 def _build_memo(
     claim: Claim, assessment: ClaimDamageAssessment, decision: str, reasoning: str,
     retrieval: dict, consistency: ConsistencyResult, composite: float | None, band: str | None,
+    retrieval_capped: bool = False, sc_info: dict | None = None,
 ) -> str:
     sections = [
         f"Claim {claim.claim_reference} — Decision: {decision}",
         f"Composite confidence: {composite:.1f} ({band})" if composite is not None else "Composite confidence: n/a (referred before scoring)",
+    ]
+    if retrieval_capped:
+        sections.append(
+            "  Note: capped from 'high' - retrieval flagged the matched clause as unreliable "
+            "(needs_human_review); the model's own confidence alone doesn't override that."
+        )
+    if sc_info and sc_info["samples"] > 1:
+        sections.append(f"  Self-consistency: {sc_info['samples']} samples, majority {sc_info['agreement']}")
+    sections += [
         "",
         "Damage assessment (Call 1):",
         f"  {assessment.damage_description}",
