@@ -379,6 +379,9 @@ class AuditLog(Base):
     decision_id = Column(Integer, ForeignKey("ai_decision.decision_id"), nullable=False)
     action_type = Column(String(50))
     description = Column(Text)
+    input_payload = Column(JSONB)
+    output_payload = Column(JSONB)
+    model_name = Column(String(50))
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     ai_decision = relationship("AIDecision", back_populates="audit_logs")
