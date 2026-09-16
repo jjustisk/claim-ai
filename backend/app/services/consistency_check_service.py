@@ -57,7 +57,11 @@ async def check_consistency(claim_id: int, db: AsyncSession) -> ConsistencyResul
         db, decision_stub.decision_id, "consistency_check",
         f"consistency_flag={parsed.consistency_flag}",
         input_payload={"claimant_text_length": len(claimant_text)},
-        output_payload={"consistency_flag": parsed.consistency_flag, "discrepancies": parsed.discrepancies},
+        output_payload={
+            "consistency_flag": parsed.consistency_flag,
+            "discrepancies": parsed.discrepancies,
+            "reasoning": parsed.reasoning,
+        },
         model_name=get_gpt_deployment(),
     )
 

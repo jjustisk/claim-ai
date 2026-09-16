@@ -131,6 +131,7 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
             "damage_type": parsed.damage_type.value,
             "severity": parsed.severity.value,
             "images_assessable": parsed.images_assessable,
+            "reasoning": parsed.reasoning,
         },
         model_name=get_gpt_deployment(),
     )

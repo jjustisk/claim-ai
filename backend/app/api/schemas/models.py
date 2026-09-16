@@ -365,6 +365,8 @@ class AIDecision(Base):
     decision = Column(String(50))
     confidence_score = Column(Float)
     reason_summary = Column(Text)
+    assessor_memo = Column(Text)
+    customer_explanation = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     claim = relationship("Claim", back_populates="ai_decisions")
