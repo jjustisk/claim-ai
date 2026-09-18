@@ -92,7 +92,10 @@ def retrieve_clauses(
 
     if action is RetrievalAction.AMBIGUOUS:
         refined_top = _refine(query_text, matches[:1])
-        broadened = _search(embedding, product_id=None, max_k=BROADENED_MAX_K)
+        # Widen k, but never drop product_id - each product's PDS is a
+        # separate contract, so a clause from a different product is never
+        # actually applicable to this claim no matter how close its distance.
+        broadened = _search(embedding, product_id=product_id, max_k=BROADENED_MAX_K)
         broadened_action = _classify(broadened[0]["distance"]) if broadened else RetrievalAction.INCORRECT
 
         if broadened_action is RetrievalAction.INCORRECT:
@@ -114,9 +117,9 @@ def retrieve_clauses(
             "needs_human_review": False,
         }
 
-    # INCORRECT: broaden once within the PDS corpus (drop product filter,
-    # widen k) then reclassify.
-    broadened = _search(embedding, product_id=None, max_k=BROADENED_MAX_K)
+    # INCORRECT: broaden once by widening k (never by dropping product_id -
+    # see note above) then reclassify.
+    broadened = _search(embedding, product_id=product_id, max_k=BROADENED_MAX_K)
     broadened_action = _classify(broadened[0]["distance"]) if broadened else RetrievalAction.INCORRECT
 
     if broadened_action is RetrievalAction.CORRECT:

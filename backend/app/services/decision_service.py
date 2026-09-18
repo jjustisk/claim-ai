@@ -13,13 +13,14 @@ adjusted scores across whichever samples agree with it.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import Counter
 from enum import Enum
 
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.schemas.models import AIDecision, Claim, ClaimDamageAssessment, Policy
+from app.api.schemas.models import AIDecision, Claim, ClaimDamageAssessment, Policy, Product
 from app.connectors.foundry import get_gpt_client, get_gpt_deployment
 from app.services.audit_log_service import get_or_create_decision, log_stage
 from app.services.consistency_check_service import ConsistencyResult, check_consistency
@@ -62,6 +63,23 @@ class Decision(BaseModel):
 class NoDamageAssessmentError(Exception):
     """The claim has no Call 1 assessment to compare against yet."""
 
+# Cheap best-effort net for a claim filed against the wrong product's policy - only words unmistakably unique to one product (shared parts like roof/wall/window/door/ceiling are deliberately excluded to avoid false positives).
+_MOTOR_KEYWORDS = {
+    "vehicle", "car", "engine", "windscreen", "tyre", "tire", "bumper",
+    "bonnet", "dashboard", "odometer", "exhaust", "collision",
+}
+_HOME_KEYWORDS = {
+    "home", "house", "hallway", "fence", "kitchen", "bedroom", "bathroom",
+    "attic", "basement", "plumbing", "backyard",
+}
+
+def _product_mismatch(text: str, insurance_type: str) -> bool:
+    words = set(re.findall(r"[a-z]+", (text or "").lower()))
+    motor_hit, home_hit = bool(words & _MOTOR_KEYWORDS), bool(words & _HOME_KEYWORDS)
+    return (insurance_type == "motor" and home_hit and not motor_hit) or (
+        insurance_type == "property" and motor_hit and not home_hit
+    )
+
 async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     claim = await db.get(Claim, claim_id)
     policy = await db.get(Policy, claim.policy_id)
@@ -76,9 +94,19 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     if policy.product_id is None:
         return await _refer(db, claim_id, "Policy has no classified product: cannot retrieve clauses")
 
+    # incident_description carries cause of loss (theft, racing, alcohol,
+    # undisclosed mods - none of which are visible in a photo); damage_description
+    # carries the visual specifics Call 1 actually saw. PDS clauses are organized
+    # by cause, so retrieval needs both, not damage_description alone.
+    retrieval_query = f"{claim.incident_description}\n{assessment.damage_description}"
+
+    product = await db.get(Product, policy.product_id)
+    if _product_mismatch(retrieval_query, product.insurance_type):
+        return await _refer(db, claim_id, "Claim content doesn't match the policy's product type.")
+
     consistency, retrieval = await asyncio.gather(
         check_consistency(claim_id, db),
-        asyncio.to_thread(retrieve_clauses, assessment.damage_description, product_id=policy.product_id),
+        asyncio.to_thread(retrieve_clauses, retrieval_query, product_id=policy.product_id),
     )
 
     prompt = _build_prompt(assessment, retrieval, consistency, FRAUD_STUB)
