@@ -22,6 +22,7 @@ from decimal import Decimal, InvalidOperation
 import pdfplumber
 
 _CURRENCY = re.compile(r"[\d,]+(?:\.\d+)?")
+_SPECIAL_EXCESS_SEGMENT = re.compile(r"([A-Za-z][A-Za-z /]*?)\s*\$[\d,]+(?:\.\d+)?")
 
 
 def _parse_currency(value: str) -> Decimal | None:
@@ -92,3 +93,29 @@ def extract_schedule_fields(pdf_bytes: bytes) -> dict:
         "max_payout": max_payout,
         "schedule_details": {"tables": tables},
     }
+
+
+def parse_scenario_excesses(schedule_details: dict | None) -> dict[str, Decimal]:
+    """Best-effort {label: amount} for every excess line item in a
+    schedule's tables, not just "Basic excess" - both the one-excess-per-row
+    motor format (Excess | Amount | When it may apply) and home's "Special
+    excesses" row, which packs several "Label $amount" segments into one
+    semicolon-separated cell (e.g. "Flood $1,500; storm $1,000").
+    """
+    excesses: dict[str, Decimal] = {}
+    for entry in (schedule_details or {}).get("tables", []):
+        for row in entry["rows"]:
+            if len(row) < 2:
+                continue
+            label, value = row[0].strip().lower(), row[1]
+            if label == "special excesses":
+                for segment in value.split(";"):
+                    match = _SPECIAL_EXCESS_SEGMENT.search(segment)
+                    amount = _parse_currency(segment)
+                    if match and amount is not None:
+                        excesses[match.group(1).strip().lower()] = amount
+            elif label.endswith("excess") and label not in excesses:
+                amount = _parse_currency(value)
+                if amount is not None:
+                    excesses[label] = amount
+    return excesses

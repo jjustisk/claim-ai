@@ -259,12 +259,16 @@ INDEX_HTML = """<!DOCTYPE html>
           return;
         }
 
+        const payoutLine = data.suggested_payout !== null
+          ? `<h2>Suggested payout</h2><pre>$${data.suggested_payout.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</pre>`
+          : "";
         resultsEl.innerHTML = `
           <div class="card ${data.decision}">
             <span class="badge">${escapeHtml(data.decision)}</span>
             <span class="conf">${data.confidence_score !== null ? "confidence " + data.confidence_score.toFixed(1) : "no score (referred before scoring)"}</span>
             <h2>Reason summary</h2>
             <pre>${escapeHtml(data.reason_summary || "")}</pre>
+            ${payoutLine}
           </div>
           <div class="card">
             <h2>Customer explanation</h2>
@@ -346,6 +350,7 @@ async def run(request: Request, claim_id: int, db: AsyncSession = Depends(get_db
             "referred_no_images": False,
             "decision": record.decision,
             "confidence_score": record.confidence_score,
+            "suggested_payout": float(record.suggested_payout) if record.suggested_payout is not None else None,
             "reason_summary": record.reason_summary,
             "customer_explanation": record.customer_explanation,
             "assessor_memo": record.assessor_memo,

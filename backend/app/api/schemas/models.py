@@ -367,6 +367,7 @@ class AIDecision(Base):
     reason_summary = Column(Text)
     assessor_memo = Column(Text)
     customer_explanation = Column(Text)
+    suggested_payout = Column(Numeric(12, 2))
     created_at = Column(DateTime, default=datetime.utcnow)
 
     claim = relationship("Claim", back_populates="ai_decisions")

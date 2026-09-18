@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
+from decimal import Decimal
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -26,6 +27,7 @@ from app.services.audit_log_service import get_or_create_decision, log_stage
 from app.services.consistency_check_service import ConsistencyResult, check_consistency
 from app.services.damage_description_services import get_latest_assessment
 from app.services.policy_retrieval_service import retrieve_clauses
+from app.services.policy_schedule_ingestion_service import parse_scenario_excesses
 
 FRAUD_STUB = 0.0
 SELF_CONSISTENCY_SAMPLES = 3  # only for moderate-band results
@@ -55,6 +57,11 @@ class Decision(BaseModel):
     adjusted_consistency: float = Field(ge=0.0, le=1.0)
     adjusted_rag: float = Field(ge=0.0, le=1.0)
     coverage_decision: CoverageDecision
+    suggested_payout: float = Field(
+        ge=0.0,
+        description="Your own rough, non-binding repair/replacement cost estimate in dollars, "
+        "before any excess or policy limit is applied. 0 if excluded or not estimable from the evidence.",
+    )
     customer_explanation: str = Field(
         description="Plain-language explanation of the decision for the claimant - "
         "clear and respectful, may reference the relevant policy section, no internal jargon"
@@ -79,6 +86,70 @@ def _product_mismatch(text: str, insurance_type: str) -> bool:
     return (insurance_type == "motor" and home_hit and not motor_hit) or (
         insurance_type == "property" and motor_hit and not home_hit
     )
+
+# Generic words in an excess label (e.g. "excess" itself, "driver", "age")
+# that would over-match almost any claim if left in - stripped before
+# comparing a label's own words against the claim's context text.
+_EXCESS_LABEL_STOPWORDS = {"excess", "driver", "age", "and", "or", "the"}
+
+def _resolve_excess(excesses: dict[str, Decimal], context_text: str, flat_excess: Decimal | None) -> Decimal | None:
+    """Matches the claim's context (damage type, cited clause, reasoning,
+    incident description) against each scenario-specific excess label's own
+    significant words - e.g. "glass excess" only matches if "glass" appears
+    somewhere in the context. Falls back to "basic excess" from the
+    schedule, then the policy's flat excess column, if nothing more
+    specific matches. Driver-related excesses (young/inexperienced/
+    undeclared driver) never match anything today - nothing in the claim
+    captures driver age or declaration status, so those categories are
+    unreachable until that data exists, not a bug in the matching itself.
+    """
+    context_words = set(re.findall(r"[a-z]+", context_text.lower()))
+    for label, amount in excesses.items():
+        if label == "basic excess":
+            continue
+        label_words = set(label.split()) - _EXCESS_LABEL_STOPWORDS
+        if label_words & context_words:
+            return amount
+    return excesses.get("basic excess", flat_excess)
+
+
+def _estimate_payout(
+    parsed: Decision, policy: Policy, assessment: ClaimDamageAssessment, claim: Claim,
+) -> tuple[Decimal | None, str | None]:
+    """Deterministically clamps the model's own non-binding suggested_payout
+    against this claim's actual applicable excess and the policy's max
+    payout. Returns (final_payout, note_for_memo). Never trusts the model's
+    raw number as-is - per the team's own decision, this is a fixed amount,
+    not a range, and it's always bounded by real policy figures, never by
+    the model's say-so alone.
+    """
+    if parsed.coverage_decision == CoverageDecision.EXCLUDED or parsed.suggested_payout <= 0:
+        return None, None
+
+    excesses = parse_scenario_excesses(policy.schedule_details)
+    context_text = f"{assessment.damage_type} {parsed.cited_clause_ref} {parsed.reasoning} {claim.incident_description or ''}"
+    applicable_excess = _resolve_excess(excesses, context_text, policy.excess)
+
+    if applicable_excess is None and policy.max_payout is None:
+        return None, "Payout not estimated: policy has no excess or max payout on file."
+
+    raw = Decimal(str(parsed.suggested_payout))
+    after_excess = raw - applicable_excess if applicable_excess is not None else raw
+    if policy.max_payout is not None:
+        after_excess = min(after_excess, policy.max_payout - (applicable_excess or Decimal(0)))
+    final_payout = max(Decimal(0), after_excess)
+
+    excess_label = next(
+        (label for label, amount in excesses.items() if amount == applicable_excess and label != "basic excess"),
+        "basic excess" if applicable_excess is not None else None,
+    )
+    note = (
+        f"Suggested payout ${raw:,.2f}, less {excess_label or 'flat'} excess "
+        f"${(applicable_excess or Decimal(0)):,.2f}, capped at policy max payout "
+        f"where applicable: ${final_payout:,.2f}."
+    )
+    return final_payout, note
+
 
 async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     claim = await db.get(Claim, claim_id)
@@ -109,7 +180,7 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
         asyncio.to_thread(retrieve_clauses, retrieval_query, product_id=policy.product_id),
     )
 
-    prompt = _build_prompt(assessment, retrieval, consistency, FRAUD_STUB)
+    prompt = _build_prompt(claim, assessment, retrieval, consistency, FRAUD_STUB)
     parsed = await asyncio.to_thread(_call_model, prompt)
 
     composite = _composite_score(parsed.adjusted_consistency, parsed.adjusted_rag, FRAUD_STUB)
@@ -134,14 +205,17 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     decision = DECISION_REFER if band =="low" else parsed.coverage_decision.value
     customer_explanation = REFERRED_CUSTOMER_MESSAGE if band == "low" else parsed.customer_explanation
 
+    payout, payout_note = (None, None) if band == "low" else _estimate_payout(parsed, policy, assessment, claim)
+
     memo = _build_memo(
         claim, assessment, decision=decision, reasoning=parsed.reasoning, retrieval=retrieval,
         consistency=consistency, composite=composite, band=band, retrieval_capped=retrieval_capped,
-        sc_info=sc_info,
+        sc_info=sc_info, payout_note=payout_note,
         )
 
     record = await _persist(
         db, claim_id, decision, parsed.reasoning, memo, customer_explanation, confidence=composite,
+        payout=payout,
     )
 
     await log_stage(
@@ -163,6 +237,8 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
             "retrieval_capped": retrieval_capped,
             "self_consistency_samples": sc_info["samples"],
             "self_consistency_agreement": sc_info["agreement"],
+            "suggested_payout_raw": parsed.suggested_payout,
+            "payout": float(payout) if payout is not None else None,
         },
         model_name=get_gpt_deployment(),
     )
@@ -226,7 +302,7 @@ async def _refer(db: AsyncSession, claim_id: int, reason: str) -> AIDecision:
 
 async def _persist(
     db: AsyncSession, claim_id: int, decision: str, reason_summary: str, memo: str,
-    customer_explanation: str, confidence: float | None = None,
+    customer_explanation: str, confidence: float | None = None, payout: Decimal | None = None,
 ) -> AIDecision:
     record = await get_or_create_decision(db, claim_id)
     record.decision = decision
@@ -234,6 +310,7 @@ async def _persist(
     record.assessor_memo = memo
     record.customer_explanation = customer_explanation
     record.confidence_score = confidence
+    record.suggested_payout = payout
     await db.commit()
     await db.refresh(record)
     return record
@@ -252,7 +329,9 @@ def _call_model(prompt: str) -> Decision:
     )
     return response.output_parsed
 
-def _build_prompt(assessment: ClaimDamageAssessment, retrieval: dict, consistency: ConsistencyResult, fraud_flag: float) -> str:
+def _build_prompt(
+    claim: Claim, assessment: ClaimDamageAssessment, retrieval: dict, consistency: ConsistencyResult, fraud_flag: float
+) -> str:
     clauses = "\n".join(
         f"[{m['metadata'].get('section_ref')}] {m['text']}" for m in retrieval["matches"]
     ) or "(none)"
@@ -261,6 +340,7 @@ def _build_prompt(assessment: ClaimDamageAssessment, retrieval: dict, consistenc
     ) or "(none)"
     definitions = "\n".join(f"{d['term']}: {d['meaning']}" for d in retrieval["linked_definitions"]) or "(none)"
     discrepancies = "\n".join(f"  - {d}" for d in consistency.discrepancies) or "  (none)"
+    estimated_value = claim.estimated_value if claim.estimated_value is not None else "not provided by claimant"
 
     return f"""You are deciding whether an insurance claim is covered, based on the
     evidence below. Cite the section_ref of every clause you rely on.
@@ -268,6 +348,13 @@ def _build_prompt(assessment: ClaimDamageAssessment, retrieval: dict, consistenc
     Also rate, 0-1, your own calibrated view of (a) how consistent the
     claimant's account is with the evidence, and (b) how well the retrieved
     clause(s) actually support your classification.
+
+    Give your own rough, non-binding repair/replacement cost estimate in
+    dollars (suggested_payout) based on the damage description and severity,
+    informed by the claimant's own estimated_value below if provided - this
+    is before any excess or policy limit is applied, those are handled
+    separately afterward. Use 0 if excluded or not reasonably estimable from
+    the evidence.
 
     Finally, write a plain-language explanation of the decision suitable to
     send directly to the claimant - clear and respectful, no internal jargon
@@ -277,6 +364,8 @@ def _build_prompt(assessment: ClaimDamageAssessment, retrieval: dict, consistenc
     - description: {assessment.damage_description}
     - damage_type: {assessment.damage_type}
     - severity: {assessment.severity}
+
+    Claimant's own estimated_value of the loss: {estimated_value}
 
     Retrieval confidence: {retrieval['action']}
     Retrieved coverage clause(s):
@@ -298,7 +387,7 @@ def _build_prompt(assessment: ClaimDamageAssessment, retrieval: dict, consistenc
 def _build_memo(
     claim: Claim, assessment: ClaimDamageAssessment, decision: str, reasoning: str,
     retrieval: dict, consistency: ConsistencyResult, composite: float | None, band: str | None,
-    retrieval_capped: bool = False, sc_info: dict | None = None,
+    retrieval_capped: bool = False, sc_info: dict | None = None, payout_note: str | None = None,
 ) -> str:
     sections = [
         f"Claim {claim.claim_reference} — Decision: {decision}",
@@ -311,6 +400,8 @@ def _build_memo(
         )
     if sc_info and sc_info["samples"] > 1:
         sections.append(f"  Self-consistency: {sc_info['samples']} samples, majority {sc_info['agreement']}")
+    if payout_note:
+        sections.append(f"  {payout_note}")
     sections += [
         "",
         "Damage assessment (Call 1):",
