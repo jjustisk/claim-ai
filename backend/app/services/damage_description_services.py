@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas.models import Claim, ClaimDamageAssessment, ClaimDocument
 from app.connectors.foundry import get_gpt_client, get_gpt_deployment
 from app.connectors.storage import download_stored_blob
+from app.services.audit_log_service import get_or_create_decision, log_stage
 
 MAX_IMAGES = 6
 IMAGE_FILE_TYPES = ("image/jpeg", "image/png")
@@ -74,6 +75,7 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
     An 'image_assessable=False' result IS persisted (valid verdict, not a failure)
     """
     claim = await db.get(Claim, claim_id)
+    decision_stub = await get_or_create_decision(db, claim_id)
 
     result  = await db.execute(
         select(ClaimDocument)
@@ -85,6 +87,10 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
     )
     documents = result.scalars().all()
     if not documents:
+        decision_stub.decision = "refer_to_assessor"
+        decision_stub.reason_summary = f"claim_id={claim_id} has no images to assess."
+        await db.commit()
+        await log_stage(db, decision_stub.decision_id, "damage_description", decision_stub.reason_summary)
         raise NoClaimImagesError(f"Claim {claim_id} has no images to assess")
 
     selected = documents[:MAX_IMAGES]
@@ -115,6 +121,20 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
     db.add(assessment)
     await db.commit()
     await db.refresh(assessment)
+
+    await log_stage(
+        db, decision_stub.decision_id, "damage_description",
+        f"images_assessable={parsed.images_assessable}; damage_type={parsed.damage_type.value}; severity={parsed.severity.value}",
+        input_payload={"images_available": len(documents), "images_assessed": len(selected)},
+        output_payload={
+            "damage_description": parsed.damage_description,
+            "damage_type": parsed.damage_type.value,
+            "severity": parsed.severity.value,
+            "images_assessable": parsed.images_assessable,
+            "reasoning": parsed.reasoning,
+        },
+        model_name=get_gpt_deployment(),
+    )
 
     return assessment
 

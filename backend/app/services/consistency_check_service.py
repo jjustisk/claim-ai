@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.models import Claim, ClaimDamageAssessment
 from app.connectors.foundry import get_gpt_client, get_gpt_deployment
+from app.services.audit_log_service import get_or_create_decision, log_stage
 from app.services.damage_description_services import get_latest_assessment
 from app.services.sanitization_service import sanitize_free_text
 
@@ -41,6 +42,7 @@ class NoDamageAssessmentError(Exception):
 
 async def check_consistency(claim_id: int, db: AsyncSession) -> ConsistencyResult:
     claim = await db.get(Claim, claim_id)
+    decision_stub = await get_or_create_decision(db, claim_id)
 
     assessment = await get_latest_assessment(claim_id, db)
     if assessment is None:
@@ -49,7 +51,21 @@ async def check_consistency(claim_id: int, db: AsyncSession) -> ConsistencyResul
     claimant_text = _build_claimant_text(claim)
     prompt = _build_prompt(assessment, claimant_text)
 
-    return await asyncio.to_thread(_call_model, prompt)
+    parsed = await asyncio.to_thread(_call_model, prompt)
+
+    await log_stage(
+        db, decision_stub.decision_id, "consistency_check",
+        f"consistency_flag={parsed.consistency_flag}",
+        input_payload={"claimant_text_length": len(claimant_text)},
+        output_payload={
+            "consistency_flag": parsed.consistency_flag,
+            "discrepancies": parsed.discrepancies,
+            "reasoning": parsed.reasoning,
+        },
+        model_name=get_gpt_deployment(),
+    )
+
+    return parsed
 
 
 def _call_model(prompt: str) -> ConsistencyResult:
