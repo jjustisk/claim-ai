@@ -15,18 +15,16 @@ from __future__ import annotations
 import re
 from enum import Enum
 
+from pydantic import BaseModel, Field
+
 from app.connectors.chromadb_store import get_pds_clauses_collection
-from app.connectors.foundry import embed_texts
+from app.connectors.foundry import embed_texts, get_gpt_client, get_mini_deployment
 
 # {term: meaning} pairs, cached per product_id.
 _definitions_cache: dict[int, list[tuple[str, str]]] = {}
 
 DEFAULT_MAX_K = 5
 DEFAULT_GAP_THRESHOLD = 0.15
-
-# Absolute cosine-distance thresholds for classifying a retrieval.
-CORRECT_DISTANCE = 0.30 # top match closer than this -> confidently relevant
-INCORRECT_DISTANCE = 0.45 # top match farther than this -> confidently irrelevant
 
 BROADENED_MAX_K = 10 # if top match is confidently irrelevant, broaden search to this many results
 

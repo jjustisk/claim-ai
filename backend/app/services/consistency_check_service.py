@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.models import Claim, ClaimDamageAssessment
-from app.connectors.foundry import get_gpt_client, get_gpt_deployment
+from app.connectors.foundry import get_gpt_client, get_mini_deployment
 from app.services.audit_log_service import get_or_create_decision, log_stage
 from app.services.damage_description_services import get_latest_assessment
 from app.services.sanitization_service import sanitize_free_text
@@ -62,15 +62,21 @@ async def check_consistency(claim_id: int, db: AsyncSession) -> ConsistencyResul
             "discrepancies": parsed.discrepancies,
             "reasoning": parsed.reasoning,
         },
-        model_name=get_gpt_deployment(),
+        model_name=get_mini_deployment(),
     )
 
     return parsed
 
 
 def _call_model(prompt: str) -> ConsistencyResult:
+    # Mini, not the full GPT-5.5 tier used by Call 1/Generation - this is a
+    # bounded comparison task (does the claimant's account match Call 1's
+    # read), not open-ended reasoning, but it still needs real semantic
+    # judgement (catching e.g. "flood" vs "gradual leak"), so nano is too
+    # shallow here despite consistency_flag carrying the largest single
+    # weight in Generation's composite score.
     response = get_gpt_client().responses.parse(
-        model=get_gpt_deployment(),
+        model=get_mini_deployment(),
         input=[{"role": "user", "content": prompt}],
         text_format=ConsistencyResult,
     )

@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     azure_ai_project_endpoint: str = ""
     azure_ai_services_endpoint: str = ""
     foundry_gpt_deployment: str = "gpt-5.5"
+    foundry_mini_deployment: str = "gpt-5.4-mini"
+    foundry_nano_deployment: str = "gpt-5.4-nano"
     foundry_router_deployment: str = "model-router"
     foundry_claude_deployment: str = "model-router"
     foundry_embedding_deployment: str = "text-embedding-3-large"
@@ -49,6 +51,8 @@ FOUNDRY_VAULT_SECRET_FIELDS: dict[str, str] = {
     "azure-ai-project-endpoint": "azure_ai_project_endpoint",
     "azure-ai-services-endpoint": "azure_ai_services_endpoint",
     "foundry-gpt-deployment": "foundry_gpt_deployment",
+    "foundry-mini-deployment": "foundry_mini_deployment",
+    "foundry-nano-deployment": "foundry_nano_deployment",
     "foundry-router-deployment": "foundry_router_deployment",
     "foundry-claude-deployment": "foundry_claude_deployment",
 }
