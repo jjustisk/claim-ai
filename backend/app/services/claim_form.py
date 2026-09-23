@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.models import (
@@ -17,6 +19,7 @@ from app.api.schemas.models import (
     PropertyContentsItem,
 )
 from app.connectors.db import get_sync_connection
+from app.connectors.foundry import get_gpt_client, get_nano_deployment
 from app.services.sanitization_service import sanitize_free_text
 
 INSURANCE_TYPES = (
@@ -610,6 +613,8 @@ def validate_submit(policy_id: int | None, parsed: dict[str, Any]) -> None:
     _require(values["claimant_phone"], "Phone number")
     _require(values["incident_date"], "Date the incident occurred")
     _require(values["incident_description"], "What happened")
+    if not is_plausible_incident_heuristic(values["incident_description"]):
+        raise ClaimSubmitError("Please provide a clearer description of what happened.")
     if values["is_policyholder"] is None:
         raise ClaimSubmitError("Say whether you are the policy holder.")
     if not values["declaration_accepted"]:
@@ -836,6 +841,41 @@ def _parse_multi(payload: dict[str, Any], key: str) -> str | None:
 def _require(value: Any, label: str) -> None:
     if value is None or (isinstance(value, str) and not value.strip()):
         raise ClaimSubmitError(f"{label} is required.")
+
+
+_MIN_INCIDENT_WORDS = 3
+
+
+class _PlausibilityJudgment(BaseModel):
+    plausible_claim: bool = Field(
+        description="True if this text plausibly describes a real damage/incident scenario, "
+        "even briefly or vaguely. False if it's off-topic, nonsensical, or unrelated to an insurance claim."
+    )
+
+
+def is_plausible_incident_heuristic(incident_description: str) -> bool:
+    """Layer 1 - free, catches pure gibberish/empty/too-short text. Runs on
+    every submission."""
+    words = re.findall(r"[a-zA-Z]{2,}", incident_description or "")
+    return len(words) >= _MIN_INCIDENT_WORDS
+
+
+def is_plausible_incident_model(incident_description: str) -> bool:
+    """Layer 2 - only called if Layer 1 already passed. Catches coherent-but-
+    irrelevant text Layer 1 can't (real sentences describing something that
+    isn't a damage/incident at all). Nano-tier: this is a narrow
+    classification, not open-ended reasoning.
+    """
+    response = get_gpt_client().responses.parse(
+        model=get_nano_deployment(),
+        input=[{"role": "user", "content": (
+            f"Claimant's description: {incident_description}\n\n"
+            "Does this plausibly describe a real damage or incident scenario "
+            "an insurance claim could be about?"
+        )}],
+        text_format=_PlausibilityJudgment,
+    )
+    return response.output_parsed.plausible_claim
 
 
 def _join_name(first: Any, last: Any) -> str | None:

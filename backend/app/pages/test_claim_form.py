@@ -18,6 +18,7 @@ Mounted on the main app at /ui/test-claim-form. Temporary test UI.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -30,6 +31,7 @@ from app.connectors.db import get_db
 from app.connectors.storage import upload_image
 from app.pages.ui_session import require_ui_role
 from app.services.auth_service import hash_password
+from app.services.claim_form import is_plausible_incident_heuristic, is_plausible_incident_model
 from app.services.claim_service import generate_claim_reference
 from app.services.damage_description_services import IMAGE_FILE_TYPES
 
@@ -336,6 +338,14 @@ async def create(request: Request, db: AsyncSession = Depends(get_db)) -> JSONRe
     incident_description = (body.get("incident_description") or "").strip()
     if not product_id or not incident_description:
         raise HTTPException(400, "product_id and incident_description are required.")
+
+    # Same layered gate as the real claim form: free heuristic first, nano
+    # model check only if that passes - rejects before any of Call 1/Call 2/
+    # Generation ever run on this claim.
+    if not is_plausible_incident_heuristic(incident_description):
+        raise HTTPException(400, "Please provide a clearer description of what happened.")
+    if not await asyncio.to_thread(is_plausible_incident_model, incident_description):
+        raise HTTPException(400, "Please provide a clearer description of what happened.")
 
     product = await db.get(Product, product_id)
     if product is None:
