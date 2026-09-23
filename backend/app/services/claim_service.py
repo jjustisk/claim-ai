@@ -32,6 +32,7 @@ from app.services.claim_form import (
     save_form_children,
     validate_submit,
 )
+from app.services.notification_service import notify_claim_submitted
 
 _REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 _SUFFIX_LENGTH = 6
@@ -426,6 +427,9 @@ async def submit_claim(
     uploaded = await _store_files(db, claim.claim_id, usable_files)
     await db.commit()
     await db.refresh(claim)
+
+    if not as_draft:
+        await notify_claim_submitted(db, claim)
 
     return {
         "claim_id": claim.claim_id,

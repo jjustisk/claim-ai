@@ -430,10 +430,11 @@ class Notification(Base):
     customer_id = Column(Integer, ForeignKey("customer.customer_id"), nullable=True)
     assessor_id = Column(Integer, ForeignKey("assessor.assessor_id"), nullable=True)
     decision_id = Column(Integer, ForeignKey("ai_decision.decision_id"), nullable=True)
-    type = Column(String(20))
+    type = Column(String(20))  # "email" | "sms" - the channel, not the event
     message = Column(Text)
     sent_at = Column(DateTime, default=datetime.utcnow)
-    trigger_source = Column(String(50))
+    trigger_source = Column(String(50))  # the event that caused it, e.g. "claim_submitted", "decision_covered"
+    status = Column(String(20))  # "sent" | "failed"
 
     claim = relationship("Claim", back_populates="notifications")
     customer = relationship("Customer", back_populates="notifications")

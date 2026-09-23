@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     azure_storage_connection_string: str = ""
     pinecone_api_key: str = ""
     azure_communication_connection_string: str = ""
+    # Verified sender identities in the ACS resource - an email domain's
+    # "from" address, and a purchased/verified phone number for SMS.
+    azure_communication_email_sender: str = ""
+    azure_communication_sms_sender: str = ""
+    # Kill switch: false skips every notification attempt entirely (no send,
+    # no Notification row), without needing to blank the ACS credentials.
+    notifications_enabled: bool = False
 
     azure_ai_project_endpoint: str = ""
     azure_ai_services_endpoint: str = ""
