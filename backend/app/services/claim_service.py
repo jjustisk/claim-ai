@@ -8,6 +8,7 @@ on their own.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import string
 import uuid
@@ -26,10 +27,12 @@ from app.services.claim_form import (
     attach_form_details,
     ensure_claim_form_columns,
     form_options,
+    is_plausible_incident_model,
     parse_claim_form,
     save_form_children,
     validate_submit,
 )
+from app.services.notification_service import notify_claim_submitted
 
 _REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 _SUFFIX_LENGTH = 6
@@ -380,7 +383,13 @@ async def submit_claim(
         _require(policy_id, "Policy")
         status = ClaimStatus.DRAFT.value
     else:
-        validate_submit(policy_id, parsed)
+        validate_submit(policy_id, parsed)  # includes the free heuristic plausibility check (Layer 1)
+        # Layer 2 - only reached if Layer 1 already passed. Off the sync
+        # validation path (asyncio.to_thread) so this blocking Foundry call
+        # doesn't stall the event loop. Drafts skip both layers entirely -
+        # a draft may be genuinely incomplete, not implausible.
+        if not await asyncio.to_thread(is_plausible_incident_model, values["incident_description"]):
+            raise ClaimSubmitError("Please provide a clearer description of what happened.")
         status = ClaimStatus.SUBMITTED.value
 
     customer_id = int(user["sub"])
@@ -418,6 +427,9 @@ async def submit_claim(
     uploaded = await _store_files(db, claim.claim_id, usable_files)
     await db.commit()
     await db.refresh(claim)
+
+    if not as_draft:
+        await notify_claim_submitted(db, claim)
 
     return {
         "claim_id": claim.claim_id,

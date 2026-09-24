@@ -1,34 +1,24 @@
 """Runtime PDS clause retrieval: given a damage description and the
 claimant's product, return the most relevant clause(s).
 
-See .claude/plans/stage0-pds-ingestion-retrieval.md for the design
-(product-scoped metadata filtering, score-gap thresholding).
-
-Known limitation, deferred: the query text passed in today is expected to
-be the VLM's image-derived damage description alone — it has no visibility
-into circumstantial context from the claimant's narrative (e.g. what led to
-the accident), which several PDS exclusions actually turn on. Revisit once
-the Decision LLM prompt is being built.
+Listwise ranking: one search returns several candidates, then a single
+model call ranks them together rather than judging each in isolation
+against a fixed threshold.
 """
 
 from __future__ import annotations
 import re
 from enum import Enum
 
+from pydantic import BaseModel, Field
+
 from app.connectors.chromadb_store import get_pds_clauses_collection
-from app.connectors.foundry import embed_texts
+from app.connectors.foundry import embed_texts, get_gpt_client, get_mini_deployment
 
 # {term: meaning} pairs, cached per product_id.
 _definitions_cache: dict[int, list[tuple[str, str]]] = {}
 
-DEFAULT_MAX_K = 5
-DEFAULT_GAP_THRESHOLD = 0.15
-
-# Absolute cosine-distance thresholds for classifying a retrieval.
-CORRECT_DISTANCE = 0.30 # top match closer than this -> confidently relevant
-INCORRECT_DISTANCE = 0.45 # top match farther than this -> confidently irrelevant
-
-BROADENED_MAX_K = 10 # if top match is confidently irrelevant, broaden search to this many results
+DEFAULT_MAX_K = 8
 
 # Distance bar for surfacing a linked exclusion clause.
 LINKED_EXCLUSION_DISTANCE = 0.75
@@ -37,19 +27,26 @@ class RetrievalAction(str, Enum):
     CORRECT = "correct"
     INCORRECT = "incorrect"
     AMBIGUOUS = "ambiguous"
-    
+
+
+class RankedMatch(BaseModel):
+    action: RetrievalAction
+    best_match_id: str | None = Field(
+        description="The id of the single best-matching candidate, or null if none apply (action=incorrect)."
+    )
+    reasoning: str = Field(description="Brief justification for the pick and classification.")
+
 
 def retrieve_clauses(
     query_text: str,
     *,
     product_id: int,
     max_k: int = DEFAULT_MAX_K,
-    gap_threshold: float = DEFAULT_GAP_THRESHOLD,
 ) -> dict:
-    """CRAG-gated retrieval. Returns:
+    """Returns:
             {
                 "action": RetrievalAction,
-                "matches": [...],
+                "matches": [...],  # the picked clause, refined - empty if incorrect
                 "linked_exclusions": [...],  # relevant exclusion clause(s), if any
                 "linked_definitions": [...],  # {term, meaning} for any defined term referenced, if any
                 "needs_human_review": bool,
@@ -57,19 +54,18 @@ def retrieve_clauses(
     """
 
     if not query_text or not query_text.strip():
-        return {
-            "action": RetrievalAction.INCORRECT,
-            "matches": [],
-            "linked_exclusions": [],
-            "linked_definitions": [],
-            "needs_human_review": True,
-        }
+        return _no_match_result()
 
     # Embed once, reuse for every _search()/_linked_exclusions() call below.
     [embedding] = embed_texts([query_text])
 
     matches = _search(embedding, product_id=product_id, max_k=max_k)
     if not matches:
+        return _no_match_result()
+
+    ranked = _rank_candidates(query_text, matches)
+
+    if ranked.action is RetrievalAction.INCORRECT or ranked.best_match_id is None:
         return {
             "action": RetrievalAction.INCORRECT,
             "matches": [],
@@ -78,74 +74,23 @@ def retrieve_clauses(
             "needs_human_review": True,
         }
 
-    action = _classify(matches[0]["distance"])
+    best = next((m for m in matches if m["id"] == ranked.best_match_id), matches[0])
+    refined = _refine(query_text, [best])
+    return {
+        "action": ranked.action,
+        "matches": refined,
+        "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
+        "linked_definitions": _linked_definitions([best], product_id=product_id),
+        # Ambiguous means the model itself wasn't fully confident even in
+        # its own best pick - route for review rather than auto-approve.
+        "needs_human_review": ranked.action is RetrievalAction.AMBIGUOUS,
+    }
 
-    if action == RetrievalAction.CORRECT:
-        refined = _refine(query_text, matches[:1])
-        return {
-            "action": action,
-            "matches": refined,
-            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
-            "linked_definitions": _linked_definitions(matches[:1], product_id=product_id),
-            "needs_human_review": False,
-        }
 
-    if action is RetrievalAction.AMBIGUOUS:
-        refined_top = _refine(query_text, matches[:1])
-        # Widen k, but never drop product_id - each product's PDS is a
-        # separate contract, so a clause from a different product is never
-        # actually applicable to this claim no matter how close its distance.
-        broadened = _search(embedding, product_id=product_id, max_k=BROADENED_MAX_K)
-        broadened_action = _classify(broadened[0]["distance"]) if broadened else RetrievalAction.INCORRECT
-
-        if broadened_action is RetrievalAction.INCORRECT:
-            kept = _apply_score_gap_threshold(matches, gap_threshold, max_k)
-            return {
-                "action": action,
-                "matches": kept,
-                "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
-                "linked_definitions": _linked_definitions(kept, product_id=product_id),
-                "needs_human_review": True,
-            }
-
-        combined = _combine(refined_top, broadened, max_k)
-        return {
-            "action": action,
-            "matches": combined,
-            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
-            "linked_definitions": _linked_definitions(matches[:1] + broadened, product_id=product_id),
-            "needs_human_review": False,
-        }
-
-    # INCORRECT: broaden once by widening k (never by dropping product_id -
-    # see note above) then reclassify.
-    broadened = _search(embedding, product_id=product_id, max_k=BROADENED_MAX_K)
-    broadened_action = _classify(broadened[0]["distance"]) if broadened else RetrievalAction.INCORRECT
-
-    if broadened_action is RetrievalAction.CORRECT:
-        refined = _refine(query_text, broadened[:1])
-        return {
-            "action": RetrievalAction.CORRECT,
-            "matches": refined,
-            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
-            "linked_definitions": _linked_definitions(broadened[:1], product_id=product_id),
-            "needs_human_review": False,
-        }
-
-    if broadened_action is RetrievalAction.AMBIGUOUS:
-        kept = _apply_score_gap_threshold(broadened, gap_threshold, max_k)
-        return {
-            "action": RetrievalAction.AMBIGUOUS,
-            "matches": kept,
-            "linked_exclusions": _linked_exclusions(embedding, product_id=product_id),
-            "linked_definitions": _linked_definitions(kept, product_id=product_id),
-            "needs_human_review": False,
-        }
-
-    # Still incorrect after broadening: escalate to a human.
+def _no_match_result() -> dict:
     return {
         "action": RetrievalAction.INCORRECT,
-        "matches": matches[:max_k],
+        "matches": [],
         "linked_exclusions": [],
         "linked_definitions": [],
         "needs_human_review": True,
@@ -230,12 +175,25 @@ def _linked_definitions(matches: list[dict], *, product_id: int) -> list[dict]:
     return found
 
 
-def _classify(top_distance: float) -> RetrievalAction:
-    if top_distance < CORRECT_DISTANCE:
-        return RetrievalAction.CORRECT
-    if top_distance > INCORRECT_DISTANCE:
-        return RetrievalAction.INCORRECT
-    return RetrievalAction.AMBIGUOUS
+def _rank_candidates(query_text: str, matches: list[dict]) -> RankedMatch:
+    """Listwise ranking: every candidate is shown to the model together in
+    one call, so it can compare them directly rather than judging each in
+    isolation"""
+    candidates = "\n\n".join(f"[id={m['id']}] {m['text']}" for m in matches)
+    response = get_gpt_client().responses.parse(
+        model=get_mini_deployment(),
+        input=[{"role": "user", "content": (
+            f"Query (claim description): {query_text}\n\n"
+            f"Candidate policy clauses:\n{candidates}\n\n"
+            "Pick the id of the single best-matching clause, and classify the match as:\n"
+            "correct - clearly and directly applicable\n"
+            "ambiguous - plausibly relevant but not clearly decisive\n"
+            "incorrect - none of these candidates actually apply (leave best_match_id null)"
+        )}],
+        text_format=RankedMatch,
+    )
+    return response.output_parsed
+
 
 def _refine(query_text: str, matches: list[dict]) -> list[dict]:
     """Decompose-then-recompose: split the matched clause, keep only strips relevant to the query, recompose.
@@ -251,26 +209,3 @@ def _refine(query_text: str, matches: list[dict]) -> list[dict]:
         ] or sentences
         refined.append({**match, "text": ". ".join(kept)})
     return refined
-
-def _combine(internal: list[dict], external: list[dict], max_k: int) -> list[dict]:
-    """Merge two match lists, de-duplicating by id, keeping internal matches first."""
-    seen_ids = {m["id"] for m in internal}
-    combined = list(internal)
-    for m in external:
-        if len(combined) >= max_k:
-            break
-        if m["id"] not in seen_ids:
-            combined.append(m)
-            seen_ids.add(m["id"])
-    return combined
-
-
-def _apply_score_gap_threshold(
-    matches: list[dict], gap_threshold: float, max_k: int
-) -> list[dict]:
-    if len(matches) <= 1:
-        return matches
-    gap = matches[1]["distance"] - matches[0]["distance"]
-    if gap > gap_threshold:
-        return [matches[0]]
-    return matches[:max_k]

@@ -3,8 +3,7 @@ Call 2, and CRAG-retrieved clauses. No second model yet (Claude Validation
 deferred - region-limited); the composite formula's claude_agreement term
 is dropped and the remaining weights rescaled to still sum to 1.0.
 
-Self-consistency (Wang et al. 2022, arXiv:2203.11171; arXiv:2510.17472 for
-reasoning models specifically): only triggered for moderate-band results
+Self-consistency: only triggered for moderate-band results
 (including those capped down from "high" by the retrieval flag below) -
 sample a few more times, take the majority coverage_decision, average the
 adjusted scores across whichever samples agree with it.
@@ -26,6 +25,7 @@ from app.connectors.foundry import get_gpt_client, get_gpt_deployment
 from app.services.audit_log_service import get_or_create_decision, log_stage
 from app.services.consistency_check_service import ConsistencyResult, check_consistency
 from app.services.damage_description_services import get_latest_assessment
+from app.services.notification_service import event_for_decision, notify_customer
 from app.services.policy_retrieval_service import retrieve_clauses
 from app.services.policy_schedule_ingestion_service import parse_scenario_excesses
 
@@ -186,14 +186,6 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     composite = _composite_score(parsed.adjusted_consistency, parsed.adjusted_rag, FRAUD_STUB)
     band = _band(composite)
 
-    # CRAG flagged the retrieval itself as unreliable (needs_human_review) -
-    # confirmed via eval that this isn't cleanly fixable by re-tuning the
-    # retrieval distance threshold (correct- and wrong-retrieval distances
-    # overlap in this corpus), so it's not used as a hard gate. But it also
-    # shouldn't be silently ignored: a flagged retrieval never earns "high",
-    # regardless of the model's own self-rated adjusted_consistency/adjusted_rag,
-    # so it can't present as confidently auto-approved on a citation CRAG
-    # itself couldn't confirm.
     band, retrieval_capped = _cap_band_for_retrieval(band, retrieval)
 
     sc_info = {"samples": 1, "agreement": None}
@@ -313,6 +305,14 @@ async def _persist(
     record.suggested_payout = payout
     await db.commit()
     await db.refresh(record)
+
+    claim = await db.get(Claim, claim_id)
+    if claim is not None:
+        await notify_customer(
+            db, claim=claim, event=event_for_decision(decision),
+            message=customer_explanation, decision_id=record.decision_id,
+        )
+
     return record
 
 
@@ -322,10 +322,7 @@ def _call_model(prompt: str) -> Decision:
         input=[{"role": "user", "content": prompt}],
         text_format=Decision,
         # Neither temperature nor seed are supported for gpt-5.5 on the
-        # Responses API (confirmed live - both raise 400 BadRequestError).
-        # This is a reasoning-tier model; sampling isn't exposed as a
-        # tunable parameter the way it is on gpt-4o-class models. The doc's
-        # determinism strategy (decision 9) needs revisiting for this model.
+        # Responses API 
     )
     return response.output_parsed
 

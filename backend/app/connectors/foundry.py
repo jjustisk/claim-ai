@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 # Model IDs in the Azure AI Foundry catalog.
 GPT_MODEL = "gpt-5.5"
+MINI_MODEL = "gpt-5.4-mini"
+NANO_MODEL = "gpt-5.4-nano"
 CLAUDE_MODEL = "claude-opus-4-8"
 ROUTER_DEPLOYMENT = "model-router"
 EMBEDDING_MODEL = "text-embedding-3-large"
@@ -103,6 +105,16 @@ def get_claude_client() -> AnthropicFoundry:
 def get_gpt_deployment() -> str:
     """Return the Foundry deployment name for GPT 5.5."""
     return settings.foundry_gpt_deployment or GPT_MODEL
+
+
+def get_mini_deployment() -> str:
+    """Cheaper reasoning-lite deployment - Call 2 and the CRAG evaluator."""
+    return settings.foundry_mini_deployment or MINI_MODEL
+
+
+def get_nano_deployment() -> str:
+    """Cheapest classification-only deployment - the claim plausibility gate."""
+    return settings.foundry_nano_deployment or NANO_MODEL
 
 
 def get_router_deployment() -> str:

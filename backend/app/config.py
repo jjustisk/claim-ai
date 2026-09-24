@@ -28,10 +28,19 @@ class Settings(BaseSettings):
     azure_storage_connection_string: str = ""
     pinecone_api_key: str = ""
     azure_communication_connection_string: str = ""
+    # Verified sender identities in the ACS resource - an email domain's
+    # "from" address, and a purchased/verified phone number for SMS.
+    azure_communication_email_sender: str = ""
+    azure_communication_sms_sender: str = ""
+    # Kill switch: false skips every notification attempt entirely (no send,
+    # no Notification row), without needing to blank the ACS credentials.
+    notifications_enabled: bool = False
 
     azure_ai_project_endpoint: str = ""
     azure_ai_services_endpoint: str = ""
     foundry_gpt_deployment: str = "gpt-5.5"
+    foundry_mini_deployment: str = "gpt-5.4-mini"
+    foundry_nano_deployment: str = "gpt-5.4-nano"
     foundry_router_deployment: str = "model-router"
     foundry_claude_deployment: str = "model-router"
     foundry_embedding_deployment: str = "text-embedding-3-large"
@@ -49,6 +58,8 @@ FOUNDRY_VAULT_SECRET_FIELDS: dict[str, str] = {
     "azure-ai-project-endpoint": "azure_ai_project_endpoint",
     "azure-ai-services-endpoint": "azure_ai_services_endpoint",
     "foundry-gpt-deployment": "foundry_gpt_deployment",
+    "foundry-mini-deployment": "foundry_mini_deployment",
+    "foundry-nano-deployment": "foundry_nano_deployment",
     "foundry-router-deployment": "foundry_router_deployment",
     "foundry-claude-deployment": "foundry_claude_deployment",
 }

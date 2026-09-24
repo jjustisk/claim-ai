@@ -15,11 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from app.connectors.db import get_sync_connection
 from app.pages.ui_session import require_ui_role
-from app.services.policy_retrieval_service import (
-    DEFAULT_GAP_THRESHOLD,
-    DEFAULT_MAX_K,
-    retrieve_clauses,
-)
+from app.services.policy_retrieval_service import DEFAULT_MAX_K, retrieve_clauses
 
 router = APIRouter(prefix="/ui/pds-search", include_in_schema=False)
 
@@ -129,11 +125,7 @@ INDEX_HTML = """<!DOCTYPE html>
   <div class="row">
     <div>
       <label for="max_k">Max k</label>
-      <input type="number" id="max_k" value="5" min="1" max="20" />
-    </div>
-    <div>
-      <label for="gap_threshold">Gap threshold</label>
-      <input type="number" id="gap_threshold" value="0.15" step="0.01" min="0" />
+      <input type="number" id="max_k" value="8" min="1" max="20" />
     </div>
   </div>
 
@@ -150,7 +142,6 @@ INDEX_HTML = """<!DOCTYPE html>
     const productSelect = document.getElementById("product");
     const textInput = document.getElementById("text");
     const maxKInput = document.getElementById("max_k");
-    const gapInput = document.getElementById("gap_threshold");
     const searchBtn = document.getElementById("search-btn");
     const statusEl = document.getElementById("status");
     const resultsEl = document.getElementById("results");
@@ -189,7 +180,6 @@ INDEX_HTML = """<!DOCTYPE html>
         text,
         product_id: productSelect.value,
         max_k: maxKInput.value,
-        gap_threshold: gapInput.value,
       });
 
       try {
@@ -287,7 +277,6 @@ def query(
     text: str,
     product_id: int,
     max_k: int = DEFAULT_MAX_K,
-    gap_threshold: float = DEFAULT_GAP_THRESHOLD,
 ) -> JSONResponse:
     auth = require_ui_role(request, "assessor")
     if isinstance(auth, RedirectResponse):
@@ -296,7 +285,7 @@ def query(
         raise HTTPException(400, "text is required.")
     try:
         outcome = retrieve_clauses(
-            text, product_id=product_id, max_k=max_k, gap_threshold=gap_threshold
+            text, product_id=product_id, max_k=max_k
         )
     except Exception as exc:
         raise HTTPException(500, f"Retrieval failed: {exc}") from exc
