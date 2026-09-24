@@ -25,11 +25,11 @@ from app.connectors.foundry import get_gpt_client, get_gpt_deployment
 from app.services.audit_log_service import get_or_create_decision, log_stage
 from app.services.consistency_check_service import ConsistencyResult, check_consistency
 from app.services.damage_description_services import get_latest_assessment
+from app.services.fraud_scoring_service import compute_fraud_flag
 from app.services.notification_service import event_for_decision, notify_customer
 from app.services.policy_retrieval_service import retrieve_clauses
 from app.services.policy_schedule_ingestion_service import parse_scenario_excesses
 
-FRAUD_STUB = 0.0
 SELF_CONSISTENCY_SAMPLES = 3  # only for moderate-band results
 
 W_CONSISTENCY = 0.375
@@ -175,22 +175,28 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     if _product_mismatch(retrieval_query, product.insurance_type):
         return await _refer(db, claim_id, "Claim content doesn't match the policy's product type.")
 
+    # compute_fraud_flag runs its own queries on `db` - kept sequential, not
+    # gathered alongside check_consistency, since AsyncSession isn't safe
+    # for concurrent use from two coroutines at once.
+    fraud_result = await compute_fraud_flag(db, claim.customer_id, claim)
+    fraud_flag = fraud_result["fraud_flag"]
+
     consistency, retrieval = await asyncio.gather(
         check_consistency(claim_id, db),
         asyncio.to_thread(retrieve_clauses, retrieval_query, product_id=policy.product_id),
     )
 
-    prompt = _build_prompt(claim, assessment, retrieval, consistency, FRAUD_STUB)
+    prompt = _build_prompt(claim, assessment, retrieval, consistency, fraud_flag)
     parsed = await asyncio.to_thread(_call_model, prompt)
 
-    composite = _composite_score(parsed.adjusted_consistency, parsed.adjusted_rag, FRAUD_STUB)
+    composite = _composite_score(parsed.adjusted_consistency, parsed.adjusted_rag, fraud_flag)
     band = _band(composite)
 
     band, retrieval_capped = _cap_band_for_retrieval(band, retrieval)
 
     sc_info = {"samples": 1, "agreement": None}
     if band == "moderate":
-        parsed, composite, band, sc_info = await _self_consistent_decision(prompt, parsed)
+        parsed, composite, band, sc_info = await _self_consistent_decision(prompt, parsed, fraud_flag)
         band, capped_again = _cap_band_for_retrieval(band, retrieval)
         retrieval_capped = retrieval_capped or capped_again
 
@@ -207,7 +213,7 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
 
     record = await _persist(
         db, claim_id, decision, parsed.reasoning, memo, customer_explanation, confidence=composite,
-        payout=payout,
+        payout=payout, fraud_flag=fraud_flag,
     )
 
     await log_stage(
@@ -219,6 +225,10 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
             "retrieval_action": retrieval["action"],
             "retrieval_needs_human_review": retrieval["needs_human_review"],
             "consistency_flag": consistency.consistency_flag,
+            "fraud_flag": fraud_flag,
+            "fraud_history": fraud_result["history"],
+            "fraud_frequency": fraud_result["frequency"],
+            "fraud_image_similarity": fraud_result["image_similarity"],
         },
         output_payload={
             "adjusted_consistency": parsed.adjusted_consistency,
@@ -257,7 +267,9 @@ def _cap_band_for_retrieval(band: str, retrieval: dict) -> tuple[str, bool]:
     return band, False
 
 
-async def _self_consistent_decision(prompt: str, first: Decision) -> tuple[Decision, float, str, dict]:
+async def _self_consistent_decision(
+    prompt: str, first: Decision, fraud_flag: float
+) -> tuple[Decision, float, str, dict]:
     """Only called on a moderate-band result. Samples SELF_CONSISTENCY_SAMPLES-1
     more times and takes the majority coverage_decision, averaging adjusted
     scores across whichever samples agree with it. The representative sample's
@@ -273,7 +285,7 @@ async def _self_consistent_decision(prompt: str, first: Decision) -> tuple[Decis
     agreeing = [s for s in samples if s.coverage_decision == majority_decision]
     avg_consistency = sum(s.adjusted_consistency for s in agreeing) / len(agreeing)
     avg_rag = sum(s.adjusted_rag for s in agreeing) / len(agreeing)
-    composite = _composite_score(avg_consistency, avg_rag, FRAUD_STUB)
+    composite = _composite_score(avg_consistency, avg_rag, fraud_flag)
     band = _band(composite)
 
     representative = min(
@@ -295,6 +307,7 @@ async def _refer(db: AsyncSession, claim_id: int, reason: str) -> AIDecision:
 async def _persist(
     db: AsyncSession, claim_id: int, decision: str, reason_summary: str, memo: str,
     customer_explanation: str, confidence: float | None = None, payout: Decimal | None = None,
+    fraud_flag: float | None = None,
 ) -> AIDecision:
     record = await get_or_create_decision(db, claim_id)
     record.decision = decision
@@ -308,6 +321,9 @@ async def _persist(
 
     claim = await db.get(Claim, claim_id)
     if claim is not None:
+        if fraud_flag is not None:
+            claim.fraud_risk_score = fraud_flag
+            await db.commit()
         await notify_customer(
             db, claim=claim, event=event_for_decision(decision),
             message=customer_explanation, decision_id=record.decision_id,
@@ -378,7 +394,7 @@ def _build_prompt(
     Discrepancies noted:
     {discrepancies}
 
-    Fraud risk signal (0-1, stub until Stage 2 is built): {fraud_flag}
+    Fraud risk signal (0-1, from claim history, frequency, and image similarity): {fraud_flag}
     """
 
 def _build_memo(

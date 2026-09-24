@@ -2,9 +2,8 @@
 Claim history and frequency fraud sub-scores which serves as a signal for the LLM.
 
 Two scores return a structured breakdown so
-the raw counts/rates of claims and rejections drive a score and can be logged
-to the audit trail and shown to an assessor, 
-already surface their own reasoning rather than a single number.
+the raw counts/rates of claims and rejections can be used to get a combined score and can be logged
+to the audit trail and shown to an assessor.
 """
 
 from __future__ import annotations
@@ -15,9 +14,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.models import Claim, ClaimStatus
+from app.services.image_similarity_service import image_similarity_score
 
 W_CLAIM_COUNT = 0.35
 W_REJECTION_RATE = 0.65
+W_HISTORY = 0.35
+W_FREQUENCY = 0.30
+W_IMAGE_SIMILARITY = 0.35
 
 _TERMINAL_STATUSES = (
     ClaimStatus.APPROVED.value,
@@ -44,7 +47,7 @@ async def _claim_count_last_12_months(
 
 
 def _claim_count_threshold(count: int) -> float:
-    """Maps a claim count to its risk score bucket."""
+    """Maps a claim count to its risk score threshold."""
     if count <= 1:
         return 0.0
     if count <= 3:
@@ -71,7 +74,7 @@ async def _rejection_rate(db: AsyncSession, customer_id: int, exclude_claim_id: 
 
 
 def _rejection_rate_threshold(rate: float) -> float:
-    """Maps a rejection rate to its risk score bucket."""
+    """Maps a rejection rate to its risk score threshold."""
     if rate <= 0.10:
         return 0.0
     if rate <= 0.30:
@@ -97,7 +100,7 @@ async def _last_claim_date(
 
 
 def _frequency_threshold(days_since: int | None) -> float:
-    """Maps days-since-last-claim to its risk score bucket."""
+    """Maps days-since-last-claim to its risk score threshold."""
     if days_since is None:
         return 0.0
     if days_since < 30:
@@ -133,4 +136,22 @@ async def frequency_score(db: AsyncSession, customer_id: int, claim: Claim) -> d
     return {
         "days_since_last_claim": days_since,
         "frequency_score": _frequency_threshold(days_since),
+    }
+
+
+async def compute_fraud_flag(db: AsyncSession, customer_id: int, claim: Claim) -> dict:
+    """Computes the combined fraud flag from history, frequency, and image similarity."""
+    history = await history_score(db, customer_id, claim)
+    frequency = await frequency_score(db, customer_id, claim)
+    image_similarity = await image_similarity_score(db, claim.claim_id)
+    fraud_flag = (
+        W_HISTORY * history["history_score"]
+        + W_FREQUENCY * frequency["frequency_score"]
+        + W_IMAGE_SIMILARITY * image_similarity["image_similarity_score"]
+    )
+    return {
+        "history": history,
+        "frequency": frequency,
+        "image_similarity": image_similarity,
+        "fraud_flag": fraud_flag,
     }

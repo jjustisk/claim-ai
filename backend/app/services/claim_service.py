@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas.models import Claim, ClaimDocument, ClaimStatus
 from app.connectors.db import get_sync_connection
 from app.connectors.storage import upload_image
+from app.services.image_similarity_service import IMAGE_FILE_TYPES, store_phash
 from app.services.claim_form import (
     CLAIM_TYPES,
     ClaimSubmitError,
@@ -82,6 +83,17 @@ def ensure_policy_customer_column() -> None:
             )
             cur.execute("DELETE FROM policy WHERE customer_id IS NULL")
             cur.execute("ALTER TABLE policy ALTER COLUMN customer_id SET NOT NULL")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ensure_claim_document_phash_column() -> None:
+    """Adds the perceptual-hash column used for image-similarity fraud scoring."""
+    conn = get_sync_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE claim_document ADD COLUMN IF NOT EXISTS phash bit(64)")
         conn.commit()
     finally:
         conn.close()
@@ -353,13 +365,17 @@ async def _store_files(db: AsyncSession, claim_id: int, files: list[UploadFile])
             content_type=file.content_type,
             overwrite=False,
         )
-        db.add(
-            ClaimDocument(
-                claim_id=claim_id,
-                file_type=file.content_type,
-                file_url=blob_name,
-            )
+        document = ClaimDocument(
+            claim_id=claim_id,
+            file_type=file.content_type,
+            file_url=blob_name,
         )
+        db.add(document)
+        await db.flush()
+
+        if file.content_type in IMAGE_FILE_TYPES:
+            await store_phash(db, document.doc_id, contents)
+
         uploaded += 1
     return uploaded
 

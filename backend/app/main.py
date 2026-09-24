@@ -16,7 +16,11 @@ from app.pages import pds_search as pds_search_pages
 from app.pages import portal as portal_pages
 from app.pages import storage as storage_pages
 from app.pages import test_claim_form as test_claim_form_pages
-from app.services.claim_service import ensure_claim_form_columns, ensure_policy_customer_column
+from app.services.claim_service import (
+    ensure_claim_document_phash_column,
+    ensure_claim_form_columns,
+    ensure_policy_customer_column,
+)
 
 
 @asynccontextmanager
@@ -25,6 +29,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     ensure_claim_form_columns()
     ensure_policy_customer_column()
+    ensure_claim_document_phash_column()
     yield
     await close_blob_service_client()
 
