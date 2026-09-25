@@ -34,6 +34,7 @@ from app.services.auth_service import hash_password
 from app.services.claim_form import is_plausible_incident_heuristic, is_plausible_incident_model
 from app.services.claim_service import generate_claim_reference
 from app.services.damage_description_services import IMAGE_FILE_TYPES
+from app.services.image_similarity_service import store_phash
 
 router = APIRouter(prefix="/ui/test-claim-form", include_in_schema=False)
 
@@ -433,7 +434,10 @@ async def upload(
     for file, contents in contents_by_file:
         blob_name = f"claim-{claim_id}/{uuid.uuid4()}-{file.filename}"
         await upload_image(blob_name, contents, content_type=file.content_type, overwrite=False)
-        db.add(ClaimDocument(claim_id=claim_id, file_type=file.content_type, file_url=blob_name))
+        document = ClaimDocument(claim_id=claim_id, file_type=file.content_type, file_url=blob_name)
+        db.add(document)
+        await db.flush()
+        await store_phash(db, document.doc_id, contents)
         blob_names.append(blob_name)
     await db.commit()
     return JSONResponse({"uploaded": True, "uploaded_count": len(blob_names), "blob_names": blob_names})

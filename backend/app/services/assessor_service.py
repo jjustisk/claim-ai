@@ -7,6 +7,7 @@ in pages/ also uses these helpers until Vue replaces it.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 from urllib.parse import quote, unquote
@@ -162,6 +163,49 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
                 dict(zip([col[0] for col in cur.description], review))
                 for review in cur.fetchall()
             ]
+
+            cur.execute(
+                """
+                SELECT input_payload
+                FROM audit_log
+                WHERE decision_id = (
+                    SELECT decision_id FROM ai_decision
+                    WHERE claim_id = %s
+                    ORDER BY created_at DESC LIMIT 1
+                )
+                AND action_type = 'generation'
+                ORDER BY timestamp DESC LIMIT 1
+                """,
+                (claim_id,),
+            )
+            audit_row = cur.fetchone()
+            claim["similar_image_match"] = None
+            if audit_row and audit_row[0]:
+                payload = audit_row[0]
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                image_similarity = payload.get("fraud_image_similarity") or {}
+                closest_match = image_similarity.get("closest_match")
+                if closest_match:
+                    cur.execute(
+                        """
+                        SELECT c.claim_reference, cu.name AS customer_name
+                        FROM claim c
+                        JOIN customer cu ON cu.customer_id = c.customer_id
+                        WHERE c.claim_id = %s
+                        """,
+                        (closest_match["matched_claim_id"],),
+                    )
+                    matched_claim_row = cur.fetchone()
+                    if matched_claim_row:
+                        claim["similar_image_match"] = {
+                            "matched_claim_id": closest_match["matched_claim_id"],
+                            "matched_claim_reference": matched_claim_row[0],
+                            "matched_customer_name": matched_claim_row[1],
+                            "matched_doc_id": closest_match["matched_doc_id"],
+                            "hamming_distance": image_similarity.get("hamming_distance"),
+                            "image_similarity_score": image_similarity.get("image_similarity_score"),
+                        }
     finally:
         conn.close()
     return attach_form_details(claim)

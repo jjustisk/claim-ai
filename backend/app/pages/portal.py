@@ -652,6 +652,29 @@ def _claim_detail_view(
     else:
         ai_html = '<p class="empty">No AI decision has been recorded yet.</p>'
 
+    match = claim.get("similar_image_match")
+    if match:
+        level = "Strong match" if match["image_similarity_score"] == 1.0 else "Possible match"
+        similar_match_html = f"""
+        <div class="card">
+          <h2>Possible image match</h2>
+          <p class="section-help">
+            {html.escape(level)} with a photo from another claim
+            (Hamming distance {match["hamming_distance"]}). Please verify before relying on this.
+          </p>
+          <img src="/ui/documents/{int(match["matched_doc_id"])}" alt="Similar image from another claim"
+               style="max-width:320px;border:1px solid #ddd;border-radius:4px;" />
+          <p>
+            <a href="/ui/claims/{int(match["matched_claim_id"])}">
+              View claim {html.escape(str(match["matched_claim_reference"]))}
+              ({html.escape(str(match["matched_customer_name"]))})
+            </a>
+          </p>
+        </div>
+        """
+    else:
+        similar_match_html = ""
+
     reviews = claim.get("reviews") or []
     if reviews:
         review_rows = []
@@ -884,6 +907,7 @@ def _claim_detail_view(
       <h2>AI decisions</h2>
       {ai_html}
     </div>
+    {similar_match_html}
     <div class="card">
       <h2>Reviews</h2>
       {reviews_html}
