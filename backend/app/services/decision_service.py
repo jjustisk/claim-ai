@@ -29,6 +29,7 @@ from app.services.fraud_scoring_service import compute_fraud_flag
 from app.services.notification_service import event_for_decision, notify_customer
 from app.services.policy_retrieval_service import retrieve_clauses
 from app.services.policy_schedule_ingestion_service import parse_scenario_excesses
+from app.services.repair_cost_reference_service import format_repair_cost_range, lookup_repair_cost_range
 
 SELF_CONSISTENCY_SAMPLES = 3  # only for moderate-band results
 
@@ -175,18 +176,20 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     if _product_mismatch(retrieval_query, product.insurance_type):
         return await _refer(db, claim_id, "Claim content doesn't match the policy's product type.")
 
-    # compute_fraud_flag runs its own queries on `db` - kept sequential, not
-    # gathered alongside check_consistency, since AsyncSession isn't safe
-    # for concurrent use from two coroutines at once.
+    # compute_fraud_flag and lookup_repair_cost_range each run their own  queries on `db` 
     fraud_result = await compute_fraud_flag(db, claim.customer_id, claim)
     fraud_flag = fraud_result["fraud_flag"]
+
+    repair_cost_reference = await lookup_repair_cost_range(
+        db, product=product.insurance_type, damage_type=assessment.damage_type, severity=assessment.severity,
+    )
 
     consistency, retrieval = await asyncio.gather(
         check_consistency(claim_id, db),
         asyncio.to_thread(retrieve_clauses, retrieval_query, product_id=policy.product_id),
     )
 
-    prompt = _build_prompt(claim, assessment, retrieval, consistency, fraud_flag)
+    prompt = _build_prompt(claim, assessment, retrieval, consistency, fraud_flag, repair_cost_reference)
     parsed = await asyncio.to_thread(_call_model, prompt)
 
     composite = _composite_score(parsed.adjusted_consistency, parsed.adjusted_rag, fraud_flag)
@@ -208,7 +211,7 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     memo = _build_memo(
         claim, assessment, decision=decision, reasoning=parsed.reasoning, retrieval=retrieval,
         consistency=consistency, composite=composite, band=band, retrieval_capped=retrieval_capped,
-        sc_info=sc_info, payout_note=payout_note,
+        sc_info=sc_info, payout_note=payout_note, repair_cost_reference=repair_cost_reference,
         )
 
     record = await _persist(
@@ -225,10 +228,12 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
             "retrieval_action": retrieval["action"],
             "retrieval_needs_human_review": retrieval["needs_human_review"],
             "consistency_flag": consistency.consistency_flag,
+            "severity_mismatch": consistency.severity_mismatch,
             "fraud_flag": fraud_flag,
             "fraud_history": fraud_result["history"],
             "fraud_frequency": fraud_result["frequency"],
             "fraud_image_similarity": fraud_result["image_similarity"],
+            "repair_cost_reference": repair_cost_reference,
         },
         output_payload={
             "adjusted_consistency": parsed.adjusted_consistency,
@@ -240,6 +245,7 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
             "self_consistency_samples": sc_info["samples"],
             "self_consistency_agreement": sc_info["agreement"],
             "suggested_payout_raw": parsed.suggested_payout,
+            "suggested_payout_within_reference": _within_reference(parsed.suggested_payout, repair_cost_reference),
             "payout": float(payout) if payout is not None else None,
         },
         model_name=get_gpt_deployment(),
@@ -342,8 +348,16 @@ def _call_model(prompt: str) -> Decision:
     )
     return response.output_parsed
 
+def _within_reference(suggested_payout: float, repair_cost_reference: dict | None) -> bool | None:
+    # Whether the model's raw suggested_payout fell inside the matched reference range
+    if repair_cost_reference is None or suggested_payout <= 0:
+        return None
+    return repair_cost_reference["cost_low"] <= suggested_payout <= repair_cost_reference["cost_high"]
+
+
 def _build_prompt(
-    claim: Claim, assessment: ClaimDamageAssessment, retrieval: dict, consistency: ConsistencyResult, fraud_flag: float
+    claim: Claim, assessment: ClaimDamageAssessment, retrieval: dict, consistency: ConsistencyResult,
+    fraud_flag: float, repair_cost_reference: dict | None,
 ) -> str:
     clauses = "\n".join(
         f"[{m['metadata'].get('section_ref')}] {m['text']}" for m in retrieval["matches"]
@@ -369,6 +383,8 @@ def _build_prompt(
     separately afterward. Use 0 if excluded or not reasonably estimable from
     the evidence.
 
+    {format_repair_cost_range(repair_cost_reference)}
+
     Finally, write a plain-language explanation of the decision suitable to
     send directly to the claimant - clear and respectful, no internal jargon
     or scoring language, though it may reference the relevant policy section.
@@ -390,7 +406,7 @@ def _build_prompt(
     Relevant definitions:
     {definitions}
 
-    Consistency check: flag={consistency.consistency_flag}
+    Consistency check: flag={consistency.consistency_flag}, severity_mismatch={consistency.severity_mismatch}
     Discrepancies noted:
     {discrepancies}
 
@@ -401,6 +417,7 @@ def _build_memo(
     claim: Claim, assessment: ClaimDamageAssessment, decision: str, reasoning: str,
     retrieval: dict, consistency: ConsistencyResult, composite: float | None, band: str | None,
     retrieval_capped: bool = False, sc_info: dict | None = None, payout_note: str | None = None,
+    repair_cost_reference: dict | None = None,
 ) -> str:
     sections = [
         f"Claim {claim.claim_reference} — Decision: {decision}",
@@ -415,6 +432,7 @@ def _build_memo(
         sections.append(f"  Self-consistency: {sc_info['samples']} samples, majority {sc_info['agreement']}")
     if payout_note:
         sections.append(f"  {payout_note}")
+    sections.append(f"  {format_repair_cost_range(repair_cost_reference)}")
     sections += [
         "",
         "Damage assessment (Call 1):",
@@ -426,7 +444,10 @@ def _build_memo(
     ) or "  (none)"
     sections += ["", "Retrieved policy clause(s):", clauses]
     discrepancies = "\n".join(f"  - {d}" for d in consistency.discrepancies) or "  (none)"
-    sections += ["", f"Consistency check: flag={consistency.consistency_flag}", discrepancies]
+    sections += [
+        "", f"Consistency check: flag={consistency.consistency_flag}, "
+        f"severity_mismatch={consistency.severity_mismatch}", discrepancies,
+    ]
     sections += ["", "Decision reasoning:", f"  {reasoning}"]
     return "\n".join(sections)
 

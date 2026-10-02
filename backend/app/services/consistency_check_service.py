@@ -25,14 +25,28 @@ class ConsistencyResult(BaseModel):
     # the single-number summary, generated last.
     reasoning: str = Field(description="Reasoning comparing the claimant's account against Call 1's classification.")
     discrepancies: list[str] = Field(description="Specific mismatches found; empty list if none.")
+    severity_mismatch: bool = Field(
+        description="True if the claimant's own account implies a notably different severity than "
+        "Call 1's assessment - e.g. claimant describes a total loss/write-off but the assessment "
+        "reads as minor, or claimant downplays damage the assessment reads as severe. Kept as its "
+        "own field (not just another discrepancy) since a payout estimate anchored to the wrong "
+        "severity tier is a specific, actionable risk, not just a generic mismatch."
+    )
     consistency_flag: float = Field(ge=0.0, le=1.0, description="0 = highly inconsistent, 1 = fully consistent.")
 
 
 _INSTRUCTIONS = """Compare an automated visual damage assessment against the
 claimant's own written account of the same incident. Identify specific
-discrepancies (e.g. claimant says flood, assessment says fire; claimant says
-minor, assessment says severe). Some difference in wording is normal - only
-flag discrepancies that would matter for coverage or an assessor's judgement.
+discrepancies (e.g. claimant says flood, assessment says fire). Some
+difference in wording is normal - only flag discrepancies that would matter
+for coverage or an assessor's judgement.
+
+Separately, judge severity_mismatch on its own: does the claimant's account
+imply a meaningfully different severity than the assessment (e.g. claimant
+says "written off"/"totalled" but the assessment reads as minor, or vice
+versa)? This drives whether a repair-cost estimate anchored to the
+assessment's severity can be trusted, so judge it even if it would also show
+up in discrepancies.
 """
 
 
@@ -60,6 +74,7 @@ async def check_consistency(claim_id: int, db: AsyncSession) -> ConsistencyResul
         output_payload={
             "consistency_flag": parsed.consistency_flag,
             "discrepancies": parsed.discrepancies,
+            "severity_mismatch": parsed.severity_mismatch,
             "reasoning": parsed.reasoning,
         },
         model_name=get_mini_deployment(),

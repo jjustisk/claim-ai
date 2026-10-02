@@ -52,20 +52,71 @@ class DamageAssessment(BaseModel):
         description="Reasoning linkning the visual evidence to the classification below."
     )
     damage_type: DamageType
-    severity: DamageSeverity
+    percent_area_affected: float = Field(
+        ge=0, le=100,
+        description="Best visual estimate of how much of the damaged surface is affected overall, "
+        "0-100. For a vehicle: roughly what percentage of the exterior body/panels shown have "
+        "visible damage. For a property: roughly what percentage of the visible room(s)/structure "
+        "shown are affected. 0 if no damage is visible.",
+    )
+    severity: DamageSeverity = Field(
+        description="Your own direct severity judgement, using the rubric below - kept alongside "
+        "percent_area_affected (not derived from it) so the two can be compared."
+    )
 
-_INSTRUCTIONS = """ You are assessing insurance claim photos. You are shown only the
+_SEVERITY_RUBRIC = {
+    "motor": """Motor severity rubric:
+    - minor: cosmetic damage only (scratches, small dents, a chipped/cracked windscreen); no
+      structural or mechanical component affected; vehicle still driveable.
+    - moderate: one or more body panels or parts need repair/replacement, but no structural
+      (chassis/frame) or safety-critical mechanical damage; vehicle may still be driveable.
+    - severe: structural or safety-critical mechanical damage (frame, engine, airbags deployed,
+      steering), vehicle not driveable, or damage spread across most of the vehicle.""",
+    "property": """Property severity rubric:
+    - minor: isolated, surface-level damage confined to a small area or single fixture (e.g. a
+      cracked tile, a small water stain); no structural impact.
+    - moderate: damage affecting one or more full rooms or a significant exterior element (e.g. a
+      roof section, an exterior wall), but the property remains structurally sound and habitable.
+    - severe: significant structural damage, multiple rooms or the whole dwelling affected, or the
+      property is not currently habitable.""",
+}
+_GENERIC_SEVERITY_RUBRIC = """Severity rubric (no product specified):
+    - minor: isolated, cosmetic/surface-level damage, nothing structural.
+    - moderate: multiple components/areas affected, but the structure/vehicle remains usable.
+    - severe: structural damage, or damage so extensive the property/vehicle is unusable."""
+
+_INSTRUCTIONS_TEMPLATE = """ You are assessing insurance claim photos. You are shown only the
     images below plus some submission metadata - no claimant statement. Judge only
     from what is visible.
 
     First decide whether the images are good enough to assess at all. Then describe
-    the visible damage, explain your reasoning, and classify the damage type and
-    severity. The claimant-selected category, if given, is a weak hint only - do not
-    defer to it.
+    the visible damage, explain your reasoning, and classify the damage type. Estimate
+    percent_area_affected as a plain number, then use the rubric below to judge severity -
+    the claimant-selected category, if given, is a weak hint only - do not defer to it.
+
+    {rubric}
     """
 
 class NoClaimImagesError(Exception):
     """The claim has no images to assess."""
+
+# First-pass thresholds, not yet tuned against a labelled eval set - revisit
+# once severity accuracy is actually measured against human-agreed labels.
+_MINOR_MAX_PERCENT = 15
+_MODERATE_MAX_PERCENT = 50
+
+def _classify_severity_from_percent(percent_area_affected: float) -> DamageSeverity:
+    """Deterministically buckets the model's own percent_area_affected estimate
+    into a severity tier, same "model estimates a number, code decides the
+    category"""
+
+    if percent_area_affected <= 0:
+        return DamageSeverity.NONE
+    if percent_area_affected <= _MINOR_MAX_PERCENT:
+        return DamageSeverity.MINOR
+    if percent_area_affected <= _MODERATE_MAX_PERCENT:
+        return DamageSeverity.MODERATE
+    return DamageSeverity.SEVERE
 
 async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessment:
     """ Run CAll 1 for a claim and persist the result.
@@ -106,6 +157,7 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
             }
         )
     parsed = await asyncio.to_thread(_call_model, content)
+    derived_severity = _classify_severity_from_percent(parsed.percent_area_affected)
 
     assessment = ClaimDamageAssessment(
         claim_id=claim_id,
@@ -113,7 +165,10 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
         damage_description=parsed.damage_description,
         reasoning=parsed.reasoning,
         damage_type=parsed.damage_type.value,
-        severity=parsed.severity.value,
+        # severity is the deterministic, percent-based classification 
+        severity=derived_severity.value,
+        model_severity=parsed.severity.value,
+        percent_area_affected=parsed.percent_area_affected,
         images_available=len(documents),
         images_assessed=len(selected),
         model=get_gpt_deployment(),
@@ -124,12 +179,14 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
 
     await log_stage(
         db, decision_stub.decision_id, "damage_description",
-        f"images_assessable={parsed.images_assessable}; damage_type={parsed.damage_type.value}; severity={parsed.severity.value}",
+        f"images_assessable={parsed.images_assessable}; damage_type={parsed.damage_type.value}; severity={derived_severity.value}",
         input_payload={"images_available": len(documents), "images_assessed": len(selected)},
         output_payload={
             "damage_description": parsed.damage_description,
             "damage_type": parsed.damage_type.value,
-            "severity": parsed.severity.value,
+            "severity": derived_severity.value,
+            "model_severity": parsed.severity.value,
+            "percent_area_affected": parsed.percent_area_affected,
             "images_assessable": parsed.images_assessable,
             "reasoning": parsed.reasoning,
         },
@@ -164,7 +221,9 @@ def _call_model(content: list[dict]) -> DamageAssessment:
     return response.output_parsed
     
 def _build_prompt(claim: Claim) -> str:
-    lines = [_INSTRUCTIONS, "", f"Submission date/time: {claim.submission_date}"]
+    rubric = _SEVERITY_RUBRIC.get(claim.insurance_type, _GENERIC_SEVERITY_RUBRIC)
+    instructions = _INSTRUCTIONS_TEMPLATE.format(rubric=rubric)
+    lines = [instructions, "", f"Submission date/time: {claim.submission_date}"]
     if claim.claim_type:
         lines.append(f"Claimant-selected category (weak hint): {claim.claim_type}")
     return "\n".join(lines)

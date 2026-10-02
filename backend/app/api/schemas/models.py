@@ -399,7 +399,9 @@ class ClaimDamageAssessment(Base):
     damage_description = Column(Text, nullable=False)
     reasoning = Column(Text, nullable=False)
     damage_type = Column(String(20), nullable=False)
-    severity = Column(String(20), nullable=False)
+    severity = Column(String(20), nullable=False)  # deterministic, from percent_area_affected
+    model_severity = Column(String(20))  # the model's own direct judgement, kept for comparison
+    percent_area_affected = Column(Float)
     images_available = Column(Integer, nullable=False)
     images_assessed = Column(Integer, nullable=False)
     model = Column(String(50))
@@ -440,3 +442,22 @@ class Notification(Base):
     customer = relationship("Customer", back_populates="notifications")
     assessor = relationship("Assessor", back_populates="notifications")
     ai_decision = relationship("AIDecision", back_populates="notifications")
+
+
+class RepairCostReference(Base):
+    """
+    Seeded reference ranges used to ground the decision stage's
+    suggested_payout instead of leaving it a pure model guess
+    """
+    __tablename__ = "repair_cost_reference"
+
+    reference_id = Column(Integer, primary_key=True, index=True)
+    product = Column(String(20), nullable=False)  # "motor" | "property"
+    damage_type = Column(String(20))  # storm | fire | flood | cyclone | other | NULL (NULL = any)
+    severity = Column(String(20), nullable=False)  # minor | moderate | severe
+    cost_low = Column(Numeric(12, 2), nullable=False)
+    cost_high = Column(Numeric(12, 2), nullable=False)
+    unit = Column(String(30))  # "per claim" | "per m2" | "per panel"
+    region = Column(String(10), default="AU")
+    source = Column(Text)  # where the range came from, cited back in the memo
+    effective_date = Column(Date)
