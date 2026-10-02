@@ -459,5 +459,4 @@ class RepairCostReference(Base):
     cost_high = Column(Numeric(12, 2), nullable=False)
     unit = Column(String(30))  # "per claim" | "per m2" | "per panel"
     region = Column(String(10), default="AU")
-    source = Column(Text)  # where the range came from, cited back in the memo
     effective_date = Column(Date)

@@ -30,7 +30,6 @@ async def lookup_repair_cost_range(
                 "cost_low": float(row.cost_low),
                 "cost_high": float(row.cost_high),
                 "unit": row.unit,
-                "source": row.source,
                 "matched_damage_type": dt,
             }
     return None
@@ -43,9 +42,8 @@ def format_repair_cost_range(reference: dict | None) -> str:
         return "No comparable repair cost reference available for this damage."
     return (
         f"Comparable repair cost range for this type of damage: "
-        f"${reference['cost_low']:,.2f}-${reference['cost_high']:,.2f} {reference['unit'] or ''} "
-        f"(source: {reference['source']}). Your suggested_payout should fall "
-        f"within or near this range - explain any significant deviation."
+        f"${reference['cost_low']:,.2f}-${reference['cost_high']:,.2f} {reference['unit'] or ''}. "
+        f"Your suggested_payout should fall within or near this range - explain any significant deviation."
     ).strip()
 
 

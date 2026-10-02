@@ -27,11 +27,14 @@ cur.execute(
         cost_high NUMERIC(12, 2) NOT NULL,
         unit VARCHAR(30),
         region VARCHAR(10) DEFAULT 'AU',
-        source TEXT,
         effective_date DATE
     )
     """
 )
+# Drops source from an earlier version of this table - not needed on the
+# product; sourcing is mentioned separately (see seed_repair_cost_reference.py
+# comments), not stored or surfaced in the app.
+cur.execute("ALTER TABLE repair_cost_reference DROP COLUMN IF EXISTS source")
 cur.execute(
     "CREATE INDEX IF NOT EXISTS ix_repair_cost_reference_lookup "
     "ON repair_cost_reference (product, damage_type, severity)"
