@@ -1,0 +1,83 @@
+# Claim AI frontend — hardened reverse proxy to the API.
+# BACKEND_UPSTREAM defaults to backend:8000 (Docker Compose).
+# On Azure Container Apps set BACKEND_UPSTREAM=backend (ingress port 80).
+limit_req_zone $binary_remote_addr zone=login_limit:10m rate=5r/m;
+
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    server_tokens off;
+    client_max_body_size 50m;
+    client_body_timeout 30s;
+    client_header_timeout 30s;
+    send_timeout 60s;
+
+    # Security headers (SPA + API proxy)
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+    add_header X-Robots-Tag "noindex, nofollow" always;
+    # SPA needs self scripts/styles/fonts; APIs are same-origin via /api/
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self'; connect-src 'self'; form-action 'self'" always;
+
+    # Login brute-force throttle at the edge
+    location = /api/auth/login {
+        limit_req zone=login_limit burst=3 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://${BACKEND_UPSTREAM}/api/auth/login;
+        proxy_http_version 1.1;
+        # $proxy_host matches upstream (backend / backend:8000) — required for ACA ingress routing
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_hide_header Server;
+        proxy_hide_header X-Powered-By;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    location /api/ {
+        proxy_pass http://${BACKEND_UPSTREAM}/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_hide_header Server;
+        proxy_hide_header X-Powered-By;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location = /health {
+        proxy_pass http://${BACKEND_UPSTREAM}/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Forwarded-Host $host;
+        access_log off;
+    }
+
+    # Never serve source maps or hidden files if present
+    location ~* \.(map)$ {
+        return 404;
+    }
+    location ~ /\. {
+        deny all;
+        return 404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

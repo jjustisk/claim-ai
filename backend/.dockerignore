@@ -1,0 +1,22 @@
+# backend build context
+.git
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.venv
+venv
+.env
+.env.*
+!.env.example
+pgAdmin
+policy_docs
+data
+pii_reduction/data
+pii_reduction/.env
+pii_reduction/.env.*
+!pii_reduction/.env.example
+pii_reduction/models/*.jit
+pii_reduction/**/__pycache__
+scripts/__pycache__
+*.log
+.pytest_cache

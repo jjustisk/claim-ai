@@ -5,8 +5,15 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, require_assessor, require_claimant
-from app.api.schemas.responses import ClaimFormOptions, ClaimListOut, ClaimSubmitOut, ReviewIn
+from app.api.schemas.responses import (
+    AssessorDecisionBriefOut,
+    ClaimFormOptions,
+    ClaimListOut,
+    ClaimSubmitOut,
+    ReviewIn,
+)
 from app.connectors.db import get_db
+from app.services.assessor_decision_brief_service import build_assessor_decision_brief
 from app.services.assessor_service import (
     ReviewError,
     claim_counts,
@@ -63,9 +70,9 @@ async def submit_claim_route(
         policy_id = int(str(policy_raw)) if policy_raw not in (None, "") else None
         claim_id = int(str(claim_id_raw)) if claim_id_raw not in (None, "") else None
     except (TypeError, ValueError):
-        raise HTTPException(400, "Choose a valid policy.") from None
+        raise HTTPException(400, "Select a valid policy.") from None
     if policy_id is None:
-        raise HTTPException(400, "Policy is required.")
+        raise HTTPException(400, "A policy must be selected.")
     upload_files = [item for item in form.getlist("files") if getattr(item, "filename", None)]
     try:
         return await submit_claim(
@@ -97,6 +104,19 @@ def claims_index(
     )
 
 
+@router.get("/{claim_id}/decision-brief", response_model=AssessorDecisionBriefOut)
+async def claim_decision_brief(
+    claim_id: int,
+    _user: dict = Depends(require_assessor),
+) -> AssessorDecisionBriefOut:
+    if get_claim(claim_id) is None:
+        raise HTTPException(404, "Claim not found.")
+    brief = await build_assessor_decision_brief(claim_id)
+    if brief.get("status") == "not_found":
+        raise HTTPException(404, "Claim not found.")
+    return AssessorDecisionBriefOut(**brief)
+
+
 @router.get("/{claim_id}")
 def claim_detail(claim_id: int, _user: dict = Depends(require_assessor)) -> dict:
     claim = get_claim(claim_id)
@@ -122,7 +142,14 @@ def claim_review(
     if get_claim(claim_id) is None:
         raise HTTPException(404, "Claim not found.")
     try:
-        save_review(int(user["sub"]), claim_id, body.outcome, body.notes)
+        save_review(
+            int(user["sub"]),
+            claim_id,
+            body.outcome,
+            body.notes,
+            customer_explanation=body.customer_explanation,
+            suggested_payout=body.suggested_payout,
+        )
     except ReviewError as exc:
         raise HTTPException(400, str(exc)) from exc
     claim = get_claim(claim_id)

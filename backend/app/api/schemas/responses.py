@@ -33,11 +33,26 @@ class PolicyDocumentOut(BaseModel):
     effective_date: datetime | None = None
 
 
+class AssessorDecisionBriefOut(BaseModel):
+    claim_id: int
+    claim_reference: str | None = None
+    status: str
+    memo: str
+    source: str | None = None
+    preliminary_decision: str | None = None
+    indicative_payment: str | None = None
+    fraud_alert: bool | None = None
+    fraud_score: float | None = None
+    generated_at: str | None = None
+
+
 class ClaimSubmitOut(BaseModel):
     claim_id: int
     claim_reference: str
     status: str
     files_uploaded: int
+    pipeline_queued: bool | None = None
+    pipeline_queue_position: int | None = None
 
 
 class ClaimFormOptions(BaseModel):
@@ -92,3 +107,5 @@ class ClaimListOut(BaseModel):
 class ReviewIn(BaseModel):
     outcome: str
     notes: str = Field(default="", max_length=4000)
+    customer_explanation: str | None = Field(default=None, max_length=8000)
+    suggested_payout: float | None = None

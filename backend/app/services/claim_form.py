@@ -444,14 +444,14 @@ def parse_claim_form(payload: dict[str, Any]) -> dict[str, Any]:
     if insurance_type in PROPERTY_CLAIM_TYPE_VALUES:
         insurance_type = "property"
     if insurance_type and insurance_type not in INSURANCE_TYPE_VALUES:
-        raise ClaimSubmitError("Choose motor vehicle or property insurance.")
+        raise ClaimSubmitError("Select motor vehicle or property insurance.")
 
     property_claim_type = _clean(payload.get("property_claim_type") or payload.get("claim_type"))
     if insurance_type == "motor":
         property_claim_type = None
     elif property_claim_type and property_claim_type not in PROPERTY_CLAIM_TYPE_VALUES:
         if property_claim_type not in INSURANCE_TYPE_VALUES:
-            raise ClaimSubmitError("Choose a valid property claim type.")
+            raise ClaimSubmitError("Select a valid property claim type.")
         property_claim_type = None
 
     holder_first = _clean(payload.get("holder_first_name"))
@@ -612,13 +612,13 @@ def validate_submit(policy_id: int | None, parsed: dict[str, Any]) -> None:
     _require(values["claimant_email"], "Email address")
     _require(values["claimant_phone"], "Phone number")
     _require(values["incident_date"], "Date the incident occurred")
-    _require(values["incident_description"], "What happened")
+    _require(values["incident_description"], "Incident description")
     if not is_plausible_incident_heuristic(values["incident_description"]):
-        raise ClaimSubmitError("Please provide a clearer description of what happened.")
+        raise ClaimSubmitError("Please provide a clearer incident description before submitting.")
     if values["is_policyholder"] is None:
-        raise ClaimSubmitError("Say whether you are the policy holder.")
+        raise ClaimSubmitError("Indicate whether you are the policyholder.")
     if not values["declaration_accepted"]:
-        raise ClaimSubmitError("Confirm the declaration before submitting.")
+        raise ClaimSubmitError("Please accept the declaration before submitting.")
     _require(values["declaration_name"], "Declaration name")
     if values["declaration_date"] is None:
         values["declaration_date"] = date.today()
@@ -630,10 +630,10 @@ def validate_submit(policy_id: int | None, parsed: dict[str, Any]) -> None:
         _require(motor.get("vehicle_year"), "Vehicle year")
         _require(motor.get("vehicle_make"), "Vehicle make")
         if motor.get("vehicle_driven") is None:
-            raise ClaimSubmitError("Say whether the insured vehicle was being driven.")
+            raise ClaimSubmitError("Indicate whether the insured vehicle was being driven.")
     elif values["insurance_type"] == "property":
         if values["claim_type"] not in PROPERTY_CLAIM_TYPE_VALUES:
-            raise ClaimSubmitError("Choose what type of property claim you are making.")
+            raise ClaimSubmitError("Select a valid property claim type.")
 
 
 async def save_form_children(db: AsyncSession, claim: Claim, parsed: dict[str, Any]) -> None:
@@ -786,7 +786,7 @@ def _parse_bool(value: Any) -> bool | None:
         return True
     if lowered in {"no", "false", "0", "off"}:
         return False
-    raise ClaimSubmitError("Use Yes or No for the yes/no questions.")
+    raise ClaimSubmitError("Answer each yes/no question with Yes or No.")
 
 
 def _parse_date(value: Any, *, label: str) -> date | None:

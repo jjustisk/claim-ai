@@ -1,9 +1,12 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { api } from '../../api/client'
+import { damageLabel, formatDate, formatMoney, statusMeta, urgency } from '../../utils/claim'
+
+const router = useRouter()
 
 const claims = ref([])
-const counts = ref({})
 const statusFilter = ref('')
 const loading = ref(true)
 const error = ref('')
@@ -13,10 +16,9 @@ async function load() {
   error.value = ''
   try {
     const res = await api.claimsList(statusFilter.value || undefined)
-    claims.value = res.items
-    counts.value = res.counts
-  } catch (err) {
-    error.value = 'Could not load the claim queue.'
+    claims.value = res.items || []
+  } catch {
+    error.value = 'The claims queue could not be loaded. Please try again.'
   } finally {
     loading.value = false
   }
@@ -24,69 +26,101 @@ async function load() {
 
 onMounted(load)
 
-// NOTE: /claims (list_claims) currently returns priority_level and
-// fraud_risk_score, but not the AI confidence band — that only comes
-// back on the single-claim detail endpoint via ai_decisions[0].
-// Sorting by priority_level + fraud_risk_score as the best available
-// proxy until the list endpoint is extended to include it.
-const sortedClaims = computed(() =>
-  [...claims.value].sort((a, b) => {
-    const priorityDiff = (b.priority_level ?? 0) - (a.priority_level ?? 0)
-    if (priorityDiff !== 0) return priorityDiff
-    const fraudDiff = (b.fraud_risk_score ?? 0) - (a.fraud_risk_score ?? 0)
-    if (fraudDiff !== 0) return fraudDiff
-    return new Date(b.submission_date || 0) - new Date(a.submission_date || 0)
-  }),
+const rows = computed(() =>
+  [...claims.value].sort((a, b) => new Date(b.submission_date || 0) - new Date(a.submission_date || 0)),
 )
 
-function fraudStyle(score) {
-  if (score >= 0.7) return 'bg-red-100 text-red-800'
-  if (score >= 0.3) return 'bg-amber-100 text-amber-800'
-  return 'bg-slate-100 text-slate-600'
+function snippet(text) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!value) return 'No incident description provided'
+  return value.length > 52 ? `${value.slice(0, 52)}…` : value
 }
 </script>
 
 <template>
   <div>
-    <div class="mb-6 flex items-center justify-between">
-      <h1 class="text-lg font-semibold">Claim queue</h1>
-      <select v-model="statusFilter" class="rounded border border-slate-300 px-2 py-1 text-sm" @change="load">
+    <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h2 class="text-lg font-bold text-slate-900">Claims queue</h2>
+        <p class="text-sm text-slate-500">Review and process claims with automated assessment support</p>
+      </div>
+      <select v-model="statusFilter" class="field w-auto min-w-[160px]" @change="load">
         <option value="">All statuses</option>
+        <option value="submitted">Submitted</option>
         <option value="under_review">Under review</option>
         <option value="approved">Approved</option>
-        <option value="rejected">Rejected</option>
+        <option value="rejected">Declined</option>
         <option value="closed">Closed</option>
       </select>
     </div>
 
-    <div class="mb-6 flex gap-4 text-sm text-slate-600">
-      <span v-for="(value, key) in counts" :key="key">{{ key }}: <strong class="text-slate-900">{{ value }}</strong></span>
-    </div>
+    <p v-if="loading" class="text-sm text-slate-500">Loading claims…</p>
+    <p v-else-if="error" class="text-sm text-red-600">{{ error }}</p>
+    <p v-else-if="!rows.length" class="text-sm text-slate-500">There are no claims matching this filter.</p>
 
-    <p v-if="loading" class="text-slate-500">Loading…</p>
-    <p v-else-if="error" class="text-red-600">{{ error }}</p>
-    <p v-else-if="!sortedClaims.length" class="text-slate-500">No claims match this filter.</p>
-
-    <ul v-else class="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
-      <li v-for="claim in sortedClaims" :key="claim.claim_id">
-        <RouterLink
-          :to="{ name: 'assessor-claim-detail', params: { id: claim.claim_id } }"
-          class="flex items-center justify-between px-4 py-3 hover:bg-slate-50"
-        >
-          <div>
-            <p class="font-medium">{{ claim.claim_reference }}</p>
-            <p class="text-sm text-slate-500">
-              {{ claim.customer_name }} · {{ claim.coverage_type }} · {{ claim.status }}
-            </p>
-          </div>
-          <span
-            class="rounded-full px-2 py-1 text-xs font-medium"
-            :class="fraudStyle(claim.fraud_risk_score ?? 0)"
+    <div v-else class="overflow-x-auto">
+      <table class="w-full min-w-[720px] text-left text-sm">
+        <thead>
+          <tr class="border-b border-slate-200 text-[11px] font-semibold tracking-wide text-slate-400">
+            <th class="px-2 py-2 font-semibold">CLAIM</th>
+            <th class="px-2 py-2 font-semibold">CUSTOMER</th>
+            <th class="px-2 py-2 font-semibold">TYPE</th>
+            <th class="px-2 py-2 font-semibold">STATUS</th>
+            <th class="px-2 py-2 font-semibold">URGENCY</th>
+            <th class="px-2 py-2 font-semibold">AMOUNT</th>
+            <th class="px-2 py-2 font-semibold">DATE</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="claim in rows"
+            :key="claim.claim_id"
+            class="cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50"
+            @click="router.push({ name: 'assessor-claim-detail', params: { id: claim.claim_id } })"
           >
-            fraud risk {{ ((claim.fraud_risk_score ?? 0) * 100).toFixed(0) }}%
-          </span>
-        </RouterLink>
-      </li>
-    </ul>
+            <td class="px-2 py-3 align-top">
+              <RouterLink
+                :to="{ name: 'assessor-claim-detail', params: { id: claim.claim_id } }"
+                class="font-semibold text-slate-900 hover:text-blue-700"
+              >
+                {{ claim.claim_reference }}
+              </RouterLink>
+              <p class="max-w-[220px] text-xs text-slate-400">{{ snippet(claim.incident_description) }}</p>
+            </td>
+            <td class="px-2 py-3 align-top">
+              <p class="font-medium text-slate-800">{{ claim.customer_name }}</p>
+              <p class="text-xs text-slate-400">{{ claim.policy_number }}</p>
+            </td>
+            <td class="px-2 py-3 align-top text-slate-700">{{ damageLabel(claim) }}</td>
+            <td class="px-2 py-3 align-top">
+              <span
+                class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset"
+                :class="{
+                  'bg-amber-50 text-amber-600 ring-amber-200': statusMeta(claim.status).tone === 'amber',
+                  'bg-blue-50 text-blue-600 ring-blue-200': statusMeta(claim.status).tone === 'blue',
+                  'bg-emerald-50 text-emerald-600 ring-emerald-200': statusMeta(claim.status).tone === 'green',
+                  'bg-red-50 text-red-600 ring-red-200': statusMeta(claim.status).tone === 'red',
+                  'bg-slate-100 text-slate-600 ring-slate-200': statusMeta(claim.status).tone === 'slate',
+                }"
+              >
+                {{ statusMeta(claim.status).label }}
+              </span>
+            </td>
+            <td
+              class="px-2 py-3 align-top font-semibold"
+              :class="{
+                'text-red-500': urgency(claim) === 'High',
+                'text-amber-500': urgency(claim) === 'Medium',
+                'text-emerald-600': urgency(claim) === 'Low',
+              }"
+            >
+              {{ urgency(claim) }}
+            </td>
+            <td class="px-2 py-3 align-top font-medium text-slate-800">{{ formatMoney(claim.cost ?? claim.estimated_value) }}</td>
+            <td class="px-2 py-3 align-top text-slate-500">{{ formatDate(claim.submission_date) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>

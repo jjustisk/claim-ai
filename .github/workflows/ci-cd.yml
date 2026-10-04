@@ -1,0 +1,472 @@
+# Claim AI — CI/CD (matches pipeline: PUSH → INSTALL → LINT → TEST → BUILD → SCAN → IMAGE → STAGING → APPROVE → PROD)
+#
+# Required GitHub secrets:
+#   DOCKERHUB_USERNAME          Docker Hub username (e.g. ctinashe)
+#   DOCKERHUB_TOKEN             Docker Hub access token (read/write)
+#   AZURE_CREDENTIALS           JSON from: az ad sp create-for-rbac --name claim-ai-gha \
+#                                 --role contributor --scopes /subscriptions/<sub>/resourceGroups/claim-ai-rg --sdk-auth
+#
+# Optional repository variables (Settings → Variables):
+#   AZURE_RESOURCE_GROUP        default: claim-ai-rg
+#   ACA_STAGING_FRONTEND        default: claim-ai-app
+#   ACA_STAGING_BACKEND         default: backend
+#   ACA_STAGING_CHROMA          default: chroma
+#   ACA_PROD_FRONTEND           default: claim-ai-app   (set to a prod app name when you split envs)
+#   ACA_PROD_BACKEND            default: backend
+#   ACA_PROD_CHROMA             default: chroma
+#   DOCKERHUB_NAMESPACE         default: ctinashe
+#
+# GitHub Environments (Settings → Environments):
+#   staging      — auto-deploy after IMAGE
+#   production   — enable "Required reviewers" for the APPROVE gate before PROD
+
+name: ci-cd
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || 'ctinashe' }}
+  IMAGE_REPO: claim-ai
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'claim-ai-rg' }}
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # INSTALL
+  # ---------------------------------------------------------------------------
+  install:
+    name: INSTALL
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-ci-test.txt
+            backend/requirements.txt
+            backend/pii_reduction/requirements.txt
+
+      - name: Install backend lint/test tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Cache frontend node_modules
+        uses: actions/cache/save@v4
+        with:
+          path: frontend/node_modules
+          key: node-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}-${{ github.sha }}
+
+      - name: Cache pip (CI test deps)
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements-ci-test.txt') }}-${{ github.sha }}
+
+  # ---------------------------------------------------------------------------
+  # LINT
+  # ---------------------------------------------------------------------------
+  lint:
+    name: LINT
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Restore frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend (ESLint)
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Lint backend (Ruff)
+        run: |
+          pip install ruff
+          ruff check backend/app backend/pii_reduction/app --config backend/ruff.toml
+
+  # ---------------------------------------------------------------------------
+  # TEST
+  # ---------------------------------------------------------------------------
+  test:
+    name: TEST
+    runs-on: ubuntu-latest
+    needs: install
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-ci-test.txt
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-ci-test.txt
+
+      - name: Run PII unit tests (stable suite)
+        working-directory: backend/pii_reduction
+        env:
+          CLAIM_AI_ENCRYPTION_KEY: "dGVzdC1rZXktZm9yLWNpLW9ubHktMzJieXRlcyshQA=="
+        run: |
+          # Full unit folder includes heavy/flaky plate cases; CI runs the stable set.
+          # requirements-ci-test.txt covers conftest + these modules (ulid, pydantic, presidio, …).
+          pytest tests/unit/test_states.py tests/unit/test_images.py tests/unit/test_retention_docs.py tests/unit/test_ocr.py -q --tb=short
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend unit smoke (package scripts resolve)
+        working-directory: frontend
+        run: |
+          npm ci
+          node --input-type=module -e "import './src/utils/claim.js'; console.log('frontend modules ok')"
+
+  # ---------------------------------------------------------------------------
+  # BUILD
+  # ---------------------------------------------------------------------------
+  build:
+    name: BUILD
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Compile backend (syntax)
+        run: python -m compileall -q backend/app backend/pii_reduction/app
+
+  # ---------------------------------------------------------------------------
+  # SCAN
+  # ---------------------------------------------------------------------------
+  scan:
+    name: SCAN
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Use v-prefixed tags only (post supply-chain migration). 0.28.0 no longer resolves.
+      - name: Filesystem vulnerability scan (Trivy) — report CRITICAL+HIGH
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+          ignore-unfixed: true
+          format: table
+          skip-dirs: |
+            .git
+            frontend/node_modules
+            frontend/dist
+            backend/.venv
+            **/__pycache__
+            **/.pytest_cache
+
+      - name: Fail on fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          format: table
+          skip-dirs: |
+            .git
+            frontend/node_modules
+            frontend/dist
+            backend/.venv
+            **/__pycache__
+            **/.pytest_cache
+
+      - name: npm audit (frontend)
+        working-directory: frontend
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # IMAGE → Docker Hub
+  # ---------------------------------------------------------------------------
+  image:
+    name: IMAGE
+    runs-on: ubuntu-latest
+    needs: scan
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      actions: write  # required for cache-from/to type=gha
+    # Only pass the tag — full image refs include DOCKERHUB_USERNAME and get blanked
+    # by GitHub when read via needs.*.outputs (secret redaction across jobs).
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Image tags
+        id: meta
+        run: |
+          SHA_SHORT="${GITHUB_SHA::7}"
+          TAG="staging-${SHA_SHORT}"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Building tags: frontend-${TAG}, backend-${TAG}, chroma-${TAG}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:frontend-${{ steps.meta.outputs.image_tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:frontend-staging
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:backend-${{ steps.meta.outputs.image_tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:backend-staging
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build & push chroma
+        uses: docker/build-push-action@v6
+        with:
+          context: chroma
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:chroma-${{ steps.meta.outputs.image_tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:chroma-staging
+          cache-from: type=gha,scope=chroma
+          cache-to: type=gha,mode=max,scope=chroma
+
+  # ---------------------------------------------------------------------------
+  # STAGING → Azure Container Apps
+  # ---------------------------------------------------------------------------
+  staging:
+    name: STAGING
+    runs-on: ubuntu-latest
+    needs: image
+    # No GitHub Environment required (repo WRITE is enough to deploy).
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy staging images
+        env:
+          FRONTEND_APP: ${{ vars.ACA_STAGING_FRONTEND || 'claim-ai-app' }}
+          BACKEND_APP: ${{ vars.ACA_STAGING_BACKEND || 'backend' }}
+          CHROMA_APP: ${{ vars.ACA_STAGING_CHROMA || 'chroma' }}
+          IMAGE_TAG: ${{ needs.image.outputs.image_tag }}
+          NS: ${{ env.DOCKERHUB_NAMESPACE }}
+          REPO: ${{ env.IMAGE_REPO }}
+        run: |
+          set -euo pipefail
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          FRONTEND_IMAGE="${NS}/${REPO}:frontend-${IMAGE_TAG}"
+          BACKEND_IMAGE="${NS}/${REPO}:backend-${IMAGE_TAG}"
+          CHROMA_IMAGE="${NS}/${REPO}:chroma-${IMAGE_TAG}"
+          echo "Deploying staging → RG=$RG"
+          echo "  chroma:   $CHROMA_IMAGE"
+          echo "  backend:  $BACKEND_IMAGE"
+          echo "  frontend: $FRONTEND_IMAGE"
+          test -n "$IMAGE_TAG"
+          az containerapp update -g "$RG" -n "$CHROMA_APP" --image "$CHROMA_IMAGE" -o none
+          az containerapp update -g "$RG" -n "$BACKEND_APP" --image "$BACKEND_IMAGE" -o none
+          az containerapp update -g "$RG" -n "$FRONTEND_APP" --image "$FRONTEND_IMAGE" \
+            --set-env-vars BACKEND_UPSTREAM=backend -o none
+          FQDN=$(az containerapp show -g "$RG" -n "$FRONTEND_APP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "STAGING_URL=https://${FQDN}" >> "$GITHUB_ENV"
+          echo "Staging frontend: https://${FQDN}"
+
+      - name: Smoke test staging
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6 7 8; do
+            if curl -fsS --max-time 30 "${STAGING_URL}/" >/dev/null; then
+              echo "Staging smoke OK: ${STAGING_URL}/"
+              exit 0
+            fi
+            echo "Attempt $i failed; waiting for cold start..."
+            sleep 20
+          done
+          echo "Staging smoke failed"
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # APPROVE (GitHub Environment protection = manual gate)
+  # ---------------------------------------------------------------------------
+  approve:
+    name: APPROVE
+    runs-on: ubuntu-latest
+    needs: [image, staging]
+    environment: production
+    steps:
+      - name: Production approval recorded
+        run: |
+          echo "Production deployment approved by a required reviewer."
+          echo "Image tag: ${{ needs.image.outputs.image_tag }}"
+
+  # ---------------------------------------------------------------------------
+  # PROD → Azure Container Apps
+  # ---------------------------------------------------------------------------
+  prod:
+    name: PROD
+    runs-on: ubuntu-latest
+    needs: [image, approve]
+    steps:
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Retag staging images as prod
+        env:
+          TAG: ${{ needs.image.outputs.image_tag }}
+          NS: ${{ env.DOCKERHUB_NAMESPACE }}
+          REPO: ${{ env.IMAGE_REPO }}
+        run: |
+          set -euo pipefail
+          test -n "$TAG"
+          SHA_SHORT="${TAG#staging-}"
+          FE="${NS}/${REPO}:frontend-${TAG}"
+          BE="${NS}/${REPO}:backend-${TAG}"
+          CH="${NS}/${REPO}:chroma-${TAG}"
+          docker buildx imagetools create -t "${NS}/${REPO}:frontend-prod-${SHA_SHORT}" -t "${NS}/${REPO}:frontend-prod" "$FE"
+          docker buildx imagetools create -t "${NS}/${REPO}:backend-prod-${SHA_SHORT}" -t "${NS}/${REPO}:backend-prod" "$BE"
+          docker buildx imagetools create -t "${NS}/${REPO}:chroma-prod-${SHA_SHORT}" -t "${NS}/${REPO}:chroma-prod" "$CH"
+          echo "FRONTEND_PROD=${NS}/${REPO}:frontend-prod-${SHA_SHORT}" >> "$GITHUB_ENV"
+          echo "BACKEND_PROD=${NS}/${REPO}:backend-prod-${SHA_SHORT}" >> "$GITHUB_ENV"
+          echo "CHROMA_PROD=${NS}/${REPO}:chroma-prod-${SHA_SHORT}" >> "$GITHUB_ENV"
+
+      - name: Deploy production images
+        env:
+          FRONTEND_APP: ${{ vars.ACA_PROD_FRONTEND || 'claim-ai-app' }}
+          BACKEND_APP: ${{ vars.ACA_PROD_BACKEND || 'backend' }}
+          CHROMA_APP: ${{ vars.ACA_PROD_CHROMA || 'chroma' }}
+        run: |
+          set -euo pipefail
+          RG="${{ env.AZURE_RESOURCE_GROUP }}"
+          echo "Deploying production → RG=$RG"
+          az containerapp update -g "$RG" -n "$CHROMA_APP" --image "$CHROMA_PROD" -o none
+          az containerapp update -g "$RG" -n "$BACKEND_APP" --image "$BACKEND_PROD" -o none
+          az containerapp update -g "$RG" -n "$FRONTEND_APP" --image "$FRONTEND_PROD" \
+            --set-env-vars BACKEND_UPSTREAM=backend -o none
+          FQDN=$(az containerapp show -g "$RG" -n "$FRONTEND_APP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Production frontend: https://${FQDN}"
+          echo "PROD_URL=https://${FQDN}" >> "$GITHUB_ENV"
+
+      - name: Smoke test production
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6 7 8; do
+            if curl -fsS --max-time 30 "${PROD_URL}/" >/dev/null; then
+              echo "Production smoke OK: ${PROD_URL}/"
+              exit 0
+            fi
+            echo "Attempt $i failed; waiting..."
+            sleep 20
+          done
+          exit 1

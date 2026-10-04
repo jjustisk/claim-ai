@@ -1178,9 +1178,26 @@ async def login_post(
     session = session_from_token(token)
     if session is None:
         return _login_view("This account cannot use the Claim AI portal.")
+    from app.security import cookie_secure
+
+    secure = cookie_secure()
     response = RedirectResponse(home_path_for_role(session["role"]), status_code=303)
-    response.set_cookie(COOKIE_TOKEN, token, httponly=True, samesite="lax")
-    response.set_cookie(COOKIE_EMAIL, email, httponly=True, samesite="lax")
+    response.set_cookie(
+        COOKIE_TOKEN,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        max_age=60 * 30,
+    )
+    response.set_cookie(
+        COOKIE_EMAIL,
+        email,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        max_age=60 * 30,
+    )
     return response
 
 

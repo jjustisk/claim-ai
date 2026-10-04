@@ -7,6 +7,14 @@ from app.connectors.secrets import (
     get_keyvault_secret,
     is_running_on_azure,
 )
+from app.security import (
+    is_production,
+    secrets_source,
+    use_env_secrets,
+    validate_cors_origins,
+    validate_database_url,
+    validate_jwt_secret,
+)
 
 
 class Settings(BaseSettings):
@@ -22,6 +30,9 @@ class Settings(BaseSettings):
     chroma_port: int = 8000
     chroma_persist_directory: str = "./data/chroma"
     chroma_collection_name: str = "claim-ai"
+    # Shared secret for Chroma token auth (Bearer). Required when talking to
+    # a remote Chroma server that has auth enabled (Docker Compose / Azure).
+    chroma_auth_token: str = ""
 
     database_url: str = ""
     jwt_secret_key: str = ""
@@ -48,10 +59,24 @@ class Settings(BaseSettings):
     # Vue (Vite) and other local frontends. Comma-separated.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # Security / deployment toggles (also readable from APP_ENV)
+    enable_test_ui: bool | None = None
+    enable_openapi_docs: bool | None = None
+
     model_config = {"env_file": "../.env", "extra": "ignore"}
 
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    def test_ui_enabled(self) -> bool:
+        if self.enable_test_ui is not None:
+            return self.enable_test_ui
+        return not is_production()
+
+    def openapi_docs_enabled(self) -> bool:
+        if self.enable_openapi_docs is not None:
+            return self.enable_openapi_docs
+        return not is_production()
 
 
 FOUNDRY_VAULT_SECRET_FIELDS: dict[str, str] = {
@@ -71,6 +96,17 @@ def _vault_fields_for_mode() -> dict[str, str]:
     return VAULT_SECRET_FIELDS
 
 
+def _finalize(settings: Settings) -> Settings:
+    validate_jwt_secret(settings.jwt_secret_key)
+    validate_database_url(settings.database_url)
+    validate_cors_origins(settings.cors_origins)
+    if not settings.database_url and (
+        is_production() or secrets_source() == "env"
+    ):
+        raise ValueError("DATABASE_URL is required.")
+    return settings
+
+
 def load_settings() -> Settings:
     settings = Settings()
 
@@ -87,11 +123,19 @@ def load_settings() -> Settings:
     ):
         return settings
 
+    # Docker / local: use process env + .env only (never bake secrets into images).
+    if use_env_secrets(settings.database_url, settings.jwt_secret_key):
+        return _finalize(settings)
+
     updates: dict[str, str] = {}
     missing: list[str] = []
     vault_fields = _vault_fields_for_mode()
 
     for secret_name, field_name in vault_fields.items():
+        # Prefer non-empty env already loaded by pydantic; vault fills gaps / Azure prod.
+        current = getattr(settings, field_name, None)
+        if isinstance(current, str) and current.strip():
+            continue
         value = get_keyvault_secret(secret_name)
         if value:
             updates[field_name] = value
@@ -104,13 +148,22 @@ def load_settings() -> Settings:
         ):
             missing.append(secret_name)
 
-    if missing:
+    if missing and is_running_on_azure():
         raise ValueError(
             f"Required Key Vault secret(s) missing: {', '.join(missing)}. "
             f"Vault: {get_key_vault_url()}"
         )
 
-    return settings.model_copy(update=updates)
+    if missing and not settings.database_url and "database-url" in missing:
+        raise ValueError(
+            f"Required Key Vault secret(s) missing: {', '.join(missing)}. "
+            f"Vault: {get_key_vault_url()}. "
+            "For Docker/local, set CLAIM_AI_SECRETS_SOURCE=env and provide DATABASE_URL "
+            "and JWT_SECRET_KEY in the environment."
+        )
+
+    merged = settings.model_copy(update=updates)
+    return _finalize(merged)
 
 
 settings = load_settings()

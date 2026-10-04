@@ -1,0 +1,15 @@
+# CI lint baseline — syntax / undefined-name class issues (expand over time).
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = [
+  "E9",   # runtime syntax errors
+  "F63",  # invalid print/statements
+  "F7",   # syntax errors in pyflakes
+  "F82",  # undefined names
+]
+ignore = []
+
+[lint.per-file-ignores]
+"**/scripts/**" = ["F82"]

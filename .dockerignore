@@ -1,0 +1,44 @@
+# Build context exclusions — keep secrets and junk out of images
+.git
+.github
+.cursor
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+**/venv
+**/node_modules
+**/dist
+**/.vite
+
+# Secrets & local env (NEVER bake into images)
+.env
+.env.*
+!.env.example
+!.env.docker.example
+**/.env
+**/.env.*
+!**/.env.example
+azure-credentials.json
+**/service-account*.json
+**/*.pem
+**/*.key
+infra/.main.parameters.generated.json
+
+# Local / sensitive runtime data
+**/data/chroma
+backend/data
+backend/pii_reduction/data
+backend/pii_reduction/.fernet_key
+backend/pii_reduction/models/*.jit
+backend/pgAdmin
+backend/policy_docs
+**/*.log
+
+# Docs / IDE
+**/.DS_Store
+**/.vscode
+**/.idea
+**/Thumbs.db

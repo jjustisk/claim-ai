@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 
 from azure.core.credentials import TokenCredential
-from azure.core.exceptions import ResourceNotFoundError
-from azure.identity import AzureCliCredential, ManagedIdentityCredential
+from azure.core.exceptions import ClientAuthenticationError, HttpResponseError, ResourceNotFoundError
+from azure.identity import (
+    AzureCliCredential,
+    ClientSecretCredential,
+    ManagedIdentityCredential,
+)
 from azure.keyvault.secrets import SecretClient
 
-KEY_VAULT_NAME = "claim-ai-kv"
+logger = logging.getLogger(__name__)
+
+DEFAULT_KEY_VAULT_NAME = "claim-ai-kv"
 
 VAULT_SECRET_FIELDS: dict[str, str] = {
     "database-url": "database_url",
@@ -80,20 +87,42 @@ def is_running_on_azure() -> bool:
 
 
 def get_key_vault_name() -> str:
-    return KEY_VAULT_NAME
+    return (
+        os.getenv("AZURE_KEY_VAULT_NAME")
+        or os.getenv("KEY_VAULT_NAME")
+        or DEFAULT_KEY_VAULT_NAME
+    ).strip()
 
 
 def get_key_vault_url() -> str:
+    explicit = (os.getenv("AZURE_KEY_VAULT_URL") or "").strip()
+    if explicit:
+        return explicit.rstrip("/") + "/"
     return f"https://{get_key_vault_name()}.vault.azure.net/"
 
 
 def get_azure_credential() -> TokenCredential:
+    """Resolve Azure credentials for containers, Azure hosts, and local CLI."""
     global _credential
     if _credential is not None:
         return _credential
 
-    if is_running_on_azure():
-        _credential = ManagedIdentityCredential()
+    tenant_id = (os.getenv("AZURE_TENANT_ID") or "").strip()
+    client_id = (os.getenv("AZURE_CLIENT_ID") or "").strip()
+    client_secret = (os.getenv("AZURE_CLIENT_SECRET") or "").strip()
+
+    if tenant_id and client_id and client_secret:
+        _credential = ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    elif is_running_on_azure():
+        _credential = (
+            ManagedIdentityCredential(client_id=client_id)
+            if client_id
+            else ManagedIdentityCredential()
+        )
     else:
         _credential = AzureCliCredential()
 
@@ -117,6 +146,12 @@ def get_keyvault_secret(secret_name: str) -> str | None:
         secret = _get_client().get_secret(secret_name)
         return secret.value
     except ResourceNotFoundError:
+        return None
+    except (ClientAuthenticationError, HttpResponseError, OSError, ValueError) as exc:
+        logger.warning("Key Vault secret %s unavailable: %s", secret_name, exc)
+        return None
+    except Exception as exc:  # noqa: BLE001 — never crash app import on vault issues
+        logger.warning("Key Vault secret %s failed: %s", secret_name, exc)
         return None
 
 

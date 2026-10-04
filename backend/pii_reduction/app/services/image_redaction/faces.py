@@ -163,14 +163,19 @@ class EgoBlurFaceRedactor(FaceRedactor):
 
 class OpenCVFaceRedactor(FaceRedactor):
     def __init__(self) -> None:
-        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        self._cascade = cv2.CascadeClassifier(cascade_path)
+        self._cascade: cv2.CascadeClassifier | None = None
+
+    def _frontal_cascade(self) -> cv2.CascadeClassifier:
+        if self._cascade is None:
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            self._cascade = cv2.CascadeClassifier(cascade_path)
+        return self._cascade
 
     def detect(self, image_path: str | Path) -> list[BoundingBox]:
         image = _load_bgr(image_path)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         # Lower minNeighbors / minSize to catch partial / distant faces
-        faces = self._cascade.detectMultiScale(
+        faces = self._frontal_cascade().detectMultiScale(
             gray, scaleFactor=1.08, minNeighbors=3, minSize=(18, 18)
         )
         boxes: list[BoundingBox] = []

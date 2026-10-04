@@ -1,0 +1,126 @@
+# Claim AI — deploy from Docker Hub (pull-only, no local build)
+#
+# Images live in ONE private repo (Hub free-plan limit):
+#   ctinashe/claim-ai:backend-<tag>
+#   ctinashe/claim-ai:frontend-<tag>
+#   ctinashe/claim-ai:chroma-<tag>
+#
+#   docker compose --env-file .env.docker -f docker-compose.hub.yml --profile local-db up -d
+
+name: claim-ai
+
+services:
+  chroma:
+    image: ${DOCKERHUB_NAMESPACE:-ctinashe}/claim-ai:chroma-${IMAGE_TAG:-local}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+      ANONYMIZED_TELEMETRY: "FALSE"
+      CHROMA_SERVER_AUTHN_PROVIDER: chromadb.auth.token_authn.TokenAuthenticationServerProvider
+      CHROMA_SERVER_AUTHN_CREDENTIALS: ${CHROMA_AUTH_TOKEN:?Set CHROMA_AUTH_TOKEN in .env.docker}
+      CHROMA_AUTH_TOKEN_TRANSPORT_HEADER: Authorization
+    volumes:
+      - chroma_data:/chroma/chroma
+    networks:
+      - claim-ai-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  backend:
+    image: ${DOCKERHUB_NAMESPACE:-ctinashe}/claim-ai:backend-${IMAGE_TAG:-local}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - .env.docker
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      CLAIM_AI_SECRETS_SOURCE: ${CLAIM_AI_SECRETS_SOURCE:-vault}
+      ENABLE_TEST_UI: ${ENABLE_TEST_UI:-false}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
+      CHROMA_HOST: ${CHROMA_HOST:-chroma}
+      CHROMA_PORT: ${CHROMA_PORT:-8000}
+      CHROMA_COLLECTION_NAME: ${CHROMA_COLLECTION_NAME:-claim-ai}
+      CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN:?Set CHROMA_AUTH_TOKEN in .env.docker}
+      AZURE_KEY_VAULT_NAME: ${AZURE_KEY_VAULT_NAME:-claim-ai-kv}
+      CLAIM_AI_DEPS_DIR: /deps
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1,backend,frontend}
+    volumes:
+      - pii_data:/app/pii_reduction/data
+      # Persists pip --user installs so first-boot install is not repeated
+      - python_deps:/deps
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    networks:
+      - claim-ai-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 600s
+    depends_on:
+      chroma:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+        required: false
+
+  frontend:
+    image: ${DOCKERHUB_NAMESPACE:-ctinashe}/claim-ai:frontend-${IMAGE_TAG:-local}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # Bind IPv4 only — on Windows/WSL, Chrome's "localhost" often uses ::1 and
+      # hits a broken wslrelay listener (ERR_CONNECTION_RESET). Use http://127.0.0.1
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:8080"
+    networks:
+      - claim-ai-net
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    profiles: ["local-db"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: claimai
+      POSTGRES_USER: claimai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-unused-local-db-not-enabled}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - claim-ai-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimai -d claimai"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+networks:
+  claim-ai-net:
+    driver: bridge
+
+volumes:
+  chroma_data:
+  pii_data:
+  postgres_data:
+  python_deps:

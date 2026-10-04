@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas.models import AIDecision, Claim, ClaimDamageAssessment, Policy, Product
 from app.connectors.foundry import get_gpt_client, get_gpt_deployment
 from app.services.audit_log_service import get_or_create_decision, log_stage
+from app.services.claim_pii_service import PiiNotReadyError, ensure_claim_ready_for_ai, sanitised_claim_record
 from app.services.consistency_check_service import ConsistencyResult, check_consistency
 from app.services.damage_description_services import get_latest_assessment
 from app.services.fraud_scoring_service import compute_fraud_flag
@@ -127,7 +128,9 @@ def _estimate_payout(
         return None, None
 
     excesses = parse_scenario_excesses(policy.schedule_details)
-    context_text = f"{assessment.damage_type} {parsed.cited_clause_ref} {parsed.reasoning} {claim.incident_description or ''}"
+    redacted = sanitised_claim_record(claim)
+    incident = redacted.get("incident_description") or ""
+    context_text = f"{assessment.damage_type} {parsed.cited_clause_ref} {parsed.reasoning} {incident}"
     applicable_excess = _resolve_excess(excesses, context_text, policy.excess)
 
     if applicable_excess is None and policy.max_payout is None:
@@ -155,6 +158,11 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     claim = await db.get(Claim, claim_id)
     policy = await db.get(Policy, claim.policy_id)
 
+    try:
+        await ensure_claim_ready_for_ai(claim_id, db)
+    except PiiNotReadyError as exc:
+        return await _refer(db, claim_id, str(exc))
+
     assessment = await get_latest_assessment(claim_id, db)
     if assessment is None:
         raise NoDamageAssessmentError(f"claim_id={claim_id} has no damage assessment yet.")
@@ -169,7 +177,9 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     # undisclosed mods - none of which are visible in a photo); damage_description
     # carries the visual specifics Call 1 actually saw. PDS clauses are organized
     # by cause, so retrieval needs both, not damage_description alone.
-    retrieval_query = f"{claim.incident_description}\n{assessment.damage_description}"
+    redacted = sanitised_claim_record(claim)
+    incident = redacted.get("incident_description") or ""
+    retrieval_query = f"{incident}\n{assessment.damage_description}"
 
     product = await db.get(Product, policy.product_id)
     if _product_mismatch(retrieval_query, product.insurance_type):
@@ -203,7 +213,12 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
     decision = DECISION_REFER if band =="low" else parsed.coverage_decision.value
     customer_explanation = REFERRED_CUSTOMER_MESSAGE if band == "low" else parsed.customer_explanation
 
-    payout, payout_note = (None, None) if band == "low" else _estimate_payout(parsed, policy, assessment, claim)
+    # Never attach a payment figure when we are referring or declining — a dollar
+    # amount next to "refer" is misleading (customer estimates must not appear here).
+    if decision in (DECISION_REFER, CoverageDecision.EXCLUDED.value):
+        payout, payout_note = None, None
+    else:
+        payout, payout_note = _estimate_payout(parsed, policy, assessment, claim)
 
     memo = _build_memo(
         claim, assessment, decision=decision, reasoning=parsed.reasoning, retrieval=retrieval,
@@ -353,7 +368,10 @@ def _build_prompt(
     ) or "(none)"
     definitions = "\n".join(f"{d['term']}: {d['meaning']}" for d in retrieval["linked_definitions"]) or "(none)"
     discrepancies = "\n".join(f"  - {d}" for d in consistency.discrepancies) or "  (none)"
-    estimated_value = claim.estimated_value if claim.estimated_value is not None else "not provided by claimant"
+    redacted = sanitised_claim_record(claim)
+    estimated_value = redacted.get("estimated_value")
+    if estimated_value is None:
+        estimated_value = "not provided by claimant"
 
     return f"""You are deciding whether an insurance claim is covered, based on the
     evidence below. Cite the section_ref of every clause you rely on.

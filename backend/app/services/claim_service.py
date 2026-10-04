@@ -9,6 +9,7 @@ on their own.
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import string
 import uuid
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas.models import Claim, ClaimDocument, ClaimStatus
 from app.connectors.db import get_sync_connection
 from app.connectors.storage import upload_image
+from app.utils.image_bytes import detect_image_mime, is_valid_image_bytes
 from app.services.image_similarity_service import IMAGE_FILE_TYPES, store_phash
 from app.services.claim_form import (
     CLAIM_TYPES,
@@ -33,6 +35,7 @@ from app.services.claim_form import (
     save_form_children,
     validate_submit,
 )
+from app.services.claim_pipeline_queue import enqueue_claim_pipeline
 from app.services.notification_service import notify_claim_submitted
 
 _REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
@@ -40,6 +43,8 @@ _SUFFIX_LENGTH = 6
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "application/pdf"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -293,7 +298,7 @@ async def delete_customer_draft(claim_id: int, customer_id: int) -> dict[str, An
     """Remove a draft the claimant owns. Submitted claims cannot be deleted here."""
     claim = get_customer_claim(claim_id, customer_id)
     if claim is None or claim.get("status") != ClaimStatus.DRAFT.value:
-        raise ClaimSubmitError("Only one of your drafts can be deleted.")
+        raise ClaimSubmitError("Only draft claims can be deleted.")
 
     conn = get_sync_connection()
     try:
@@ -319,7 +324,7 @@ async def delete_customer_draft(claim_id: int, customer_id: int) -> dict[str, An
             )
             if cur.rowcount != 1:
                 conn.rollback()
-                raise ClaimSubmitError("That draft could not be deleted.")
+                raise ClaimSubmitError("The draft claim could not be deleted.")
         conn.commit()
     finally:
         conn.close()
@@ -358,22 +363,32 @@ async def _store_files(db: AsyncSession, claim_id: int, files: list[UploadFile])
         if len(contents) > MAX_FILE_SIZE:
             raise ClaimSubmitError(f"File too large: {file.filename}")
 
+        content_type = file.content_type or "application/octet-stream"
+        if content_type in IMAGE_FILE_TYPES or content_type == "application/octet-stream":
+            sniffed = detect_image_mime(contents)
+            if sniffed:
+                content_type = sniffed
+            elif content_type in IMAGE_FILE_TYPES:
+                raise ClaimSubmitError(
+                    f"{file.filename} is not a valid JPEG or PNG (corrupt or wrong file type)."
+                )
+
         blob_name = f"claim-{claim_id}/{uuid.uuid4()}-{file.filename}"
         await upload_image(
             blob_name,
             contents,
-            content_type=file.content_type,
+            content_type=content_type,
             overwrite=False,
         )
         document = ClaimDocument(
             claim_id=claim_id,
-            file_type=file.content_type,
+            file_type=content_type,
             file_url=blob_name,
         )
         db.add(document)
         await db.flush()
 
-        if file.content_type in IMAGE_FILE_TYPES:
+        if content_type in IMAGE_FILE_TYPES and is_valid_image_bytes(contents):
             await store_phash(db, document.doc_id, contents)
 
         uploaded += 1
@@ -404,21 +419,33 @@ async def submit_claim(
         # validation path (asyncio.to_thread) so this blocking Foundry call
         # doesn't stall the event loop. Drafts skip both layers entirely -
         # a draft may be genuinely incomplete, not implausible.
-        if not await asyncio.to_thread(is_plausible_incident_model, values["incident_description"]):
-            raise ClaimSubmitError("Please provide a clearer description of what happened.")
+        try:
+            plausible = await asyncio.to_thread(
+                is_plausible_incident_model,
+                values["incident_description"],
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "Foundry plausibility check failed during claim submit"
+            )
+            raise ClaimSubmitError(
+                "Claim validation is temporarily unavailable. Please try again in a moment."
+            ) from exc
+        if not plausible:
+            raise ClaimSubmitError("Please provide a clearer incident description before submitting.")
         status = ClaimStatus.SUBMITTED.value
 
     customer_id = int(user["sub"])
     if policy_id is not None and not customer_owns_policy(int(policy_id), customer_id):
-        raise ClaimSubmitError("Policy not found.")
+        raise ClaimSubmitError("The selected policy was not found for this account.")
 
     claim: Claim | None = None
     if claim_id is not None:
         claim = await db.get(Claim, claim_id)
         if claim is None or claim.customer_id != customer_id:
-            raise ClaimSubmitError("Draft claim not found.")
+            raise ClaimSubmitError("The draft claim was not found.")
         if claim.status != ClaimStatus.DRAFT.value:
-            raise ClaimSubmitError("Only a draft can be updated.")
+            raise ClaimSubmitError("Only draft claims can be updated.")
 
     if claim is None:
         claim = Claim(
@@ -446,6 +473,24 @@ async def submit_claim(
 
     if not as_draft:
         await notify_claim_submitted(db, claim)
+        # Mark as queued before the HTTP response so the UI can leave immediately.
+        claim.pii_status = "queued"
+        await db.commit()
+        queue_meta = await enqueue_claim_pipeline(claim.claim_id)
+        logger.info(
+            "Claim submitted claim_id=%s — AI pipeline queued (position=%s size=%s)",
+            claim.claim_id,
+            queue_meta.get("queue_position"),
+            queue_meta.get("queue_size"),
+        )
+        return {
+            "claim_id": claim.claim_id,
+            "claim_reference": claim.claim_reference,
+            "status": claim.status,
+            "files_uploaded": uploaded,
+            "pipeline_queued": True,
+            "pipeline_queue_position": queue_meta.get("queue_position"),
+        }
 
     return {
         "claim_id": claim.claim_id,

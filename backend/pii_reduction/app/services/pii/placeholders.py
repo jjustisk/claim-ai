@@ -79,6 +79,38 @@ class PlaceholderRegistry:
         placeholder = self.placeholder_for(entity_type, original)
         return text[:start] + placeholder + text[end:], placeholder
 
+    def scrub_known_values(self, text: str) -> str:
+        """Replace any mapped originals still present in text (longest first).
+
+        Needed when the same PII string appears in multiple claim fields and only
+        some spans were detected on the first pass (e.g. street redacted but still
+        left raw inside a composite incident_location).
+        """
+        if not text or not self.mapping:
+            return text
+        items = sorted(
+            ((ph, original) for ph, original in self.mapping.items() if original),
+            key=lambda pair: len(pair[1]),
+            reverse=True,
+        )
+        out = text
+        for placeholder, original in items:
+            if len(original.strip()) < 2:
+                continue
+            if original in out:
+                out = out.replace(original, placeholder)
+        return out
+
+    def scrub_structure(self, data: Any) -> Any:
+        """Recursively scrub mapped originals from strings in nested structures."""
+        if isinstance(data, str):
+            return self.scrub_known_values(data)
+        if isinstance(data, list):
+            return [self.scrub_structure(item) for item in data]
+        if isinstance(data, dict):
+            return {key: self.scrub_structure(value) for key, value in data.items()}
+        return data
+
 
 def extract_placeholders(text: str) -> list[str]:
     return PLACEHOLDER_RE.findall(text)
