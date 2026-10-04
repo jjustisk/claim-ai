@@ -13,7 +13,7 @@ PUSH → INSTALL → LINT → TEST → BUILD → SCAN → IMAGE → STAGING → 
 | **LINT** | ESLint (frontend), Ruff (backend) |
 | **TEST** | PII unit tests + frontend module smoke |
 | **BUILD** | `vite build` + Python `compileall` |
-| **SCAN** | Trivy filesystem scan (CRITICAL/HIGH) |
+| **SCAN** | Trivy fs scan (`aquasecurity/trivy-action@v0.36.0`); reports CRITICAL/HIGH, fails on fixable CRITICAL |
 | **IMAGE** | Build/push `frontend` / `backend` / `chroma` to Docker Hub |
 | **STAGING** | Deploy to Azure Container Apps (`staging` environment) |
 | **APPROVE** | Manual gate (`production` environment reviewers) |
