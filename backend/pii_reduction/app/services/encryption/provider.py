@@ -49,11 +49,21 @@ class FernetEncryptionProvider(EncryptionProvider):
             raise ValueError("Unable to decrypt payload") from exc
 
 
+def _is_production() -> bool:
+    env = (os.environ.get("APP_ENV") or os.environ.get("ENVIRONMENT") or "").strip().lower()
+    return env in {"production", "prod"}
+
+
 def _resolve_dev_key() -> str:
     """Stable dev key across reloads — avoids orphaning encrypted raw uploads."""
     env_key = os.environ.get("CLAIM_AI_ENCRYPTION_KEY") or os.environ.get("ENCRYPTION_KEY")
     if env_key and env_key.strip():
         return env_key.strip()
+
+    if _is_production():
+        raise ValueError(
+            "CLAIM_AI_ENCRYPTION_KEY must be set in production; refusing to auto-generate."
+        )
 
     if _KEY_FILE.is_file():
         stored = _KEY_FILE.read_text(encoding="ascii").strip()

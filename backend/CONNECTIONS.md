@@ -95,17 +95,21 @@ await upload_image("path/to/blob", data, content_type="image/jpeg")
 
 ## `app/connectors/chromadb_store.py` — ChromaDB
 
-**What it connects to:** ChromaDB (either a running server or local storage on disk)
+**What it connects to:** ChromaDB (HTTP server with optional token auth, or local storage on disk)
 
 **What belongs here:**
 - One shared ChromaDB client (remote server or local folder)
+- Bearer token auth via `CHROMA_AUTH_TOKEN` when using `HttpClient`
 - Getting a collection with `get_collection(name)`
 - Resetting the client in tests with `reset_chroma_client()`
 
 **What does not belong here:**
 - Building embeddings or search logic for claims
 - Workflow code that ties vector search to business rules
-- ChromaDB host, port, or folder settings (those go in `config.py` / `.env`)
+- ChromaDB host, port, token, or folder settings (those go in `config.py` / `.env`)
+
+**Docker Compose:** backend uses `CHROMA_HOST=chroma` on the private network. Chroma
+has no host port publish; both sides share `CHROMA_AUTH_TOKEN`.
 
 **How to use it:**
 ```python

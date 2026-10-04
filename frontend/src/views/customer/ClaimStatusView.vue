@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../../api/client'
+import { formatDate, statusMeta } from '../../utils/claim'
 
 const props = defineProps({ id: { type: [String, Number], required: true } })
 const router = useRouter()
@@ -14,31 +15,23 @@ onMounted(async () => {
   try {
     claim.value = await api.myClaimDetail(props.id)
   } catch {
-    error.value = 'Could not load this claim.'
+    error.value = 'This claim could not be loaded. Please try again.'
   } finally {
     loading.value = false
   }
 })
 
-// Derived stage timeline from claim.status + submission_date/outcome_date.
-// TODO(backend): there's no real milestone-timestamp tracking yet
-// (e.g. "AI review started", "sent to assessor") — only submission_date
-// and outcome_date exist on the claim row. This is a reasonable
-// approximation for the MVP demo, but matching the step list's
-// "milestone timeline, estimated resolution" properly needs a backend
-// addition (a claim_status_history table or similar) before this can
-// show real per-stage timestamps.
 const steps = computed(() => {
   if (!claim.value) return []
   const status = claim.value.status
-  const terminal = ['approved', 'rejected', 'closed'].includes(status)
+  const decided = ['approved', 'rejected', 'closed'].includes(status)
   return [
-    { label: 'Submitted', done: true, date: claim.value.submission_date },
-    { label: 'Under review', done: status !== 'submitted', date: null },
+    { title: 'Automated assessment', body: 'Supporting evidence and the incident description are being assessed.', done: status !== 'submitted' && status !== 'draft' },
+    { title: 'Assessor review', body: 'A licensed assessor will review the recommendation before a decision is finalised.', done: decided || status === 'under_review' },
     {
-      label: terminal ? status.charAt(0).toUpperCase() + status.slice(1) : 'Decision',
-      done: terminal,
-      date: claim.value.outcome_date,
+      title: 'Decision notification',
+      body: decided ? `Outcome: ${statusMeta(status).label}.` : 'You will be notified when a decision is available.',
+      done: decided,
     },
   ]
 })
@@ -46,40 +39,31 @@ const steps = computed(() => {
 
 <template>
   <div>
-    <button class="mb-4 text-sm text-slate-500 hover:text-slate-900" @click="router.push({ name: 'my-claims' })">
-      ← Back to my claims
+    <button class="mb-4 text-sm font-medium text-slate-500 hover:text-slate-900" @click="router.push({ name: 'my-claims' })">
+      ← Back to claims
     </button>
-
-    <p v-if="loading" class="text-slate-500">Loading…</p>
-    <p v-else-if="error" class="text-red-600">{{ error }}</p>
-
-    <div v-else-if="claim" class="max-w-xl space-y-6">
-      <div>
-        <h1 class="text-lg font-semibold">{{ claim.claim_reference }}</h1>
-        <p class="text-sm text-slate-500">{{ claim.coverage_type }} · {{ claim.policy_number }}</p>
-      </div>
-
-      <ol class="space-y-4">
-        <li v-for="(step, i) in steps" :key="i" class="flex items-start gap-3">
+    <p v-if="loading" class="text-sm text-slate-500">Loading claim details…</p>
+    <p v-else-if="error" class="text-sm text-red-600">{{ error }}</p>
+    <div v-else-if="claim" class="mx-auto max-w-lg">
+      <p class="text-center text-xs text-slate-400">Claim reference</p>
+      <h2 class="text-center text-2xl font-extrabold text-blue-600">{{ claim.claim_reference }}</h2>
+      <p class="mt-1 text-center text-sm text-slate-500">
+        {{ statusMeta(claim.status).label }} · submitted {{ formatDate(claim.submission_date) || '—' }}
+      </p>
+      <ol class="mt-6 space-y-4">
+        <li v-for="(step, index) in steps" :key="step.title" class="flex gap-3">
           <span
-            class="mt-0.5 flex h-5 w-5 flex-none items-center justify-center rounded-full text-xs"
-            :class="step.done ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'"
+            class="mt-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-full text-xs font-bold"
+            :class="step.done ? 'bg-emerald-500 text-white' : 'bg-blue-50 text-blue-600'"
           >
-            {{ step.done ? '✓' : i + 1 }}
+            {{ step.done ? '✓' : index + 1 }}
           </span>
           <div>
-            <p :class="step.done ? 'font-medium text-slate-900' : 'text-slate-500'">{{ step.label }}</p>
-            <p v-if="step.date" class="text-xs text-slate-400">{{ step.date }}</p>
+            <p class="text-sm font-semibold">{{ step.title }}</p>
+            <p class="text-sm text-slate-500">{{ step.body }}</p>
           </div>
         </li>
       </ol>
-
-      <section v-if="claim.documents?.length" class="rounded border border-slate-200 bg-white p-4">
-        <h2 class="mb-2 text-sm font-medium">Your uploaded evidence</h2>
-        <ul class="space-y-1 text-sm text-slate-600">
-          <li v-for="doc in claim.documents" :key="doc.doc_id">{{ doc.file_type }} — {{ doc.upload_date }}</li>
-        </ul>
-      </section>
     </div>
   </div>
 </template>

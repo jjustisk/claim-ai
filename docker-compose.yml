@@ -1,0 +1,147 @@
+# Claim AI — production-oriented Docker Compose
+#
+# Secrets come from Azure Key Vault (claim-ai-kv), same as the non-Docker app.
+# .env.docker only holds non-secret config + Azure identity so the container
+# can reach the vault. Never put Key Vault secret values in the image.
+#
+# Usage (Key Vault — normal path):
+#   cp .env.docker.example .env.docker
+#   # set identity / CORS / ports + CHROMA_AUTH_TOKEN
+#   docker compose --env-file .env.docker up --build
+#
+# Optional local Postgres (dev only; DB URL still usually from vault unless you override):
+#   docker compose --env-file .env.docker --profile local-db up --build
+#
+# Security notes:
+# - Chroma is internal-only (no host port publish). Backend reaches it as "chroma:8000".
+# - Chroma requires token auth (CHROMA_AUTH_TOKEN). Never leave it blank in compose.
+# - Images must not contain .env / secrets (.dockerignore enforces this).
+
+name: claim-ai
+
+services:
+  chroma:
+    # Custom image: official chromadb/chroma:0.6.3 is broken on some amd64 hosts
+    # (exec format error). We pin chromadb==0.6.3 to match the backend client.
+    build:
+      context: ./chroma
+      dockerfile: Dockerfile
+    image: ${DOCKERHUB_NAMESPACE:-ctinashe}/claim-ai:chroma-${IMAGE_TAG:-local}
+    restart: unless-stopped
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+      ANONYMIZED_TELEMETRY: "FALSE"
+      # Token auth — must match backend CHROMA_AUTH_TOKEN
+      CHROMA_SERVER_AUTHN_PROVIDER: chromadb.auth.token_authn.TokenAuthenticationServerProvider
+      CHROMA_SERVER_AUTHN_CREDENTIALS: ${CHROMA_AUTH_TOKEN:?Set CHROMA_AUTH_TOKEN in .env.docker}
+      CHROMA_AUTH_TOKEN_TRANSPORT_HEADER: Authorization
+    volumes:
+      - chroma_data:/chroma/chroma
+    # Intentionally NOT publishing ports — Chroma stays on the private compose network.
+    networks:
+      - claim-ai-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  backend:
+    # Thin image: app code only. pip install runs at container start into python_deps volume.
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: ${DOCKERHUB_NAMESPACE:-ctinashe}/claim-ai:backend-${IMAGE_TAG:-local}
+    restart: unless-stopped
+    env_file:
+      - .env.docker
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      # vault = load DATABASE_URL, JWT, storage, Foundry, etc. from Key Vault
+      CLAIM_AI_SECRETS_SOURCE: ${CLAIM_AI_SECRETS_SOURCE:-vault}
+      ENABLE_TEST_UI: ${ENABLE_TEST_UI:-false}
+      ENABLE_OPENAPI_DOCS: ${ENABLE_OPENAPI_DOCS:-false}
+      # Point at the compose Chroma service (overrides empty host in env file)
+      CHROMA_HOST: ${CHROMA_HOST:-chroma}
+      CHROMA_PORT: ${CHROMA_PORT:-8000}
+      CHROMA_COLLECTION_NAME: ${CHROMA_COLLECTION_NAME:-claim-ai}
+      CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN:?Set CHROMA_AUTH_TOKEN in .env.docker}
+      AZURE_KEY_VAULT_NAME: ${AZURE_KEY_VAULT_NAME:-claim-ai-kv}
+      CLAIM_AI_DEPS_DIR: /deps
+    volumes:
+      - pii_data:/app/pii_reduction/data
+      - python_deps:/deps
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    networks:
+      - claim-ai-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 600s
+    depends_on:
+      chroma:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+        required: false
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+    image: ${DOCKERHUB_NAMESPACE:-ctinashe}/claim-ai:frontend-${IMAGE_TAG:-local}
+    restart: unless-stopped
+    ports:
+      # IPv4 only — avoid Windows/WSL ::1/localhost connection resets
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:8080"
+    networks:
+      - claim-ai-net
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    profiles: ["local-db"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: claimai
+      POSTGRES_USER: claimai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-unused-local-db-not-enabled}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Bind to localhost only — do not expose Postgres on all interfaces
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - claim-ai-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claimai -d claimai"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+networks:
+  claim-ai-net:
+    driver: bridge
+    internal: false
+
+volumes:
+  chroma_data:
+  pii_data:
+  postgres_data:
+  python_deps:

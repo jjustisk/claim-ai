@@ -183,6 +183,10 @@ class Claim(Base):
     charges_details = Column(Text)
     declaration_position = Column(String(100))
 
+    pii_session_id = Column(String(64))
+    pii_status = Column(String(32))
+    llm_payload_json = Column(Text)
+
     customer = relationship("Customer", back_populates="claims")
     policy = relationship("Policy", back_populates="claims")
     documents = relationship("ClaimDocument", back_populates="claim")
@@ -212,6 +216,7 @@ class ClaimDocument(Base):
     claim_id = Column(Integer, ForeignKey("claim.claim_id"), nullable=False)
     file_type = Column(String(50))
     file_url = Column(Text)
+    sanitised_file_url = Column(Text)
     upload_date = Column(DateTime, default=datetime.utcnow)
 
     claim = relationship("Claim", back_populates="documents")

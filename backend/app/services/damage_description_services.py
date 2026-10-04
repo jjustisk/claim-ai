@@ -21,6 +21,13 @@ from app.api.schemas.models import Claim, ClaimDamageAssessment, ClaimDocument
 from app.connectors.foundry import get_gpt_client, get_gpt_deployment
 from app.connectors.storage import download_stored_blob
 from app.services.audit_log_service import get_or_create_decision, log_stage
+from app.services.claim_pii_service import (
+    PiiNotReadyError,
+    ensure_claim_ready_for_ai,
+    sanitised_image_blob_for_ai,
+    sanitised_claim_record,
+)
+from app.utils.image_bytes import detect_image_mime
 
 MAX_IMAGES = 6
 IMAGE_FILE_TYPES = ("image/jpeg", "image/png")
@@ -67,6 +74,11 @@ _INSTRUCTIONS = """ You are assessing insurance claim photos. You are shown only
 class NoClaimImagesError(Exception):
     """The claim has no images to assess."""
 
+
+class NoSanitisedImagesError(Exception):
+    """PII-reduced images are required before Call 1."""
+
+
 async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessment:
     """ Run CAll 1 for a claim and persist the result.
 
@@ -76,6 +88,14 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
     """
     claim = await db.get(Claim, claim_id)
     decision_stub = await get_or_create_decision(db, claim_id)
+    try:
+        await ensure_claim_ready_for_ai(claim_id, db)
+    except PiiNotReadyError as exc:
+        decision_stub.decision = "refer_to_assessor"
+        decision_stub.reason_summary = str(exc)
+        await db.commit()
+        await log_stage(db, decision_stub.decision_id, "damage_description", decision_stub.reason_summary)
+        raise NoSanitisedImagesError(str(exc)) from exc
 
     result  = await db.execute(
         select(ClaimDocument)
@@ -93,19 +113,55 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
         await log_stage(db, decision_stub.decision_id, "damage_description", decision_stub.reason_summary)
         raise NoClaimImagesError(f"Claim {claim_id} has no images to assess")
 
-    selected = documents[:MAX_IMAGES]
+    ai_docs: list[tuple[ClaimDocument, str]] = []
+    for doc in documents:
+        try:
+            blob_path = sanitised_image_blob_for_ai(doc)
+        except PiiNotReadyError:
+            continue
+        ai_docs.append((doc, blob_path))
+    if not ai_docs:
+        decision_stub.decision = "refer_to_assessor"
+        decision_stub.reason_summary = (
+            f"claim_id={claim_id} has images but no blob path for AI assessment."
+        )
+        await db.commit()
+        await log_stage(db, decision_stub.decision_id, "damage_description", decision_stub.reason_summary)
+        raise NoSanitisedImagesError(decision_stub.reason_summary)
 
     content: list[dict] = [{"type": "input_text", "text": _build_prompt(claim)}]
-    for doc in selected:
-        image_bytes = await download_stored_blob(doc.file_url)
+    assessed_count = 0
+    for doc, blob_path in ai_docs[:MAX_IMAGES]:
+        image_bytes = await download_stored_blob(blob_path)
+        mime = detect_image_mime(image_bytes)
+        if not mime:
+            continue
         b64 = base64.b64encode(image_bytes).decode("ascii")
         content.append(
             {
                 "type": "input_image",
-                "image_url": f"data:{doc.file_type};base64,{b64}",
+                "image_url": f"data:{mime};base64,{b64}",
             }
         )
-    parsed = await asyncio.to_thread(_call_model, content)
+        assessed_count += 1
+
+    if assessed_count == 0:
+        decision_stub.decision = "refer_to_assessor"
+        decision_stub.reason_summary = (
+            f"claim_id={claim_id} has image files but none are valid JPEG/PNG bytes in storage."
+        )
+        await db.commit()
+        await log_stage(db, decision_stub.decision_id, "damage_description", decision_stub.reason_summary)
+        raise NoSanitisedImagesError(decision_stub.reason_summary)
+
+    try:
+        parsed = await asyncio.to_thread(_call_model, content)
+    except Exception as exc:
+        decision_stub.decision = "refer_to_assessor"
+        decision_stub.reason_summary = f"Damage assessment model error: {exc}"
+        await db.commit()
+        await log_stage(db, decision_stub.decision_id, "damage_description", decision_stub.reason_summary)
+        raise NoSanitisedImagesError(decision_stub.reason_summary) from exc
 
     assessment = ClaimDamageAssessment(
         claim_id=claim_id,
@@ -115,7 +171,7 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
         damage_type=parsed.damage_type.value,
         severity=parsed.severity.value,
         images_available=len(documents),
-        images_assessed=len(selected),
+        images_assessed=assessed_count,
         model=get_gpt_deployment(),
     )
     db.add(assessment)
@@ -125,7 +181,7 @@ async def assess_damage(claim_id: int, db: AsyncSession) -> ClaimDamageAssessmen
     await log_stage(
         db, decision_stub.decision_id, "damage_description",
         f"images_assessable={parsed.images_assessable}; damage_type={parsed.damage_type.value}; severity={parsed.severity.value}",
-        input_payload={"images_available": len(documents), "images_assessed": len(selected)},
+        input_payload={"images_available": len(documents), "images_assessed": assessed_count},
         output_payload={
             "damage_description": parsed.damage_description,
             "damage_type": parsed.damage_type.value,
@@ -164,7 +220,10 @@ def _call_model(content: list[dict]) -> DamageAssessment:
     return response.output_parsed
     
 def _build_prompt(claim: Claim) -> str:
-    lines = [_INSTRUCTIONS, "", f"Submission date/time: {claim.submission_date}"]
-    if claim.claim_type:
-        lines.append(f"Claimant-selected category (weak hint): {claim.claim_type}")
+    record = sanitised_claim_record(claim)
+    submitted = record.get("submission_date") or claim.submission_date
+    lines = [_INSTRUCTIONS, "", f"Submission date/time: {submitted}"]
+    claim_type = record.get("claim_type")
+    if claim_type:
+        lines.append(f"Claimant-selected category (weak hint): {claim_type}")
     return "\n".join(lines)

@@ -63,6 +63,10 @@ def list_claims(status: str | None = None) -> list[dict[str, Any]]:
             c.priority_level,
             c.fraud_risk_score,
             c.cost,
+            c.estimated_value,
+            c.incident_description,
+            c.claim_type,
+            c.insurance_type,
             cu.name AS customer_name,
             cu.email AS customer_email,
             p.policy_number,
@@ -136,7 +140,8 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
 
             cur.execute(
                 """
-                SELECT decision_id, decision, confidence_score, reason_summary, created_at
+                SELECT decision_id, decision, confidence_score, reason_summary,
+                       assessor_memo, customer_explanation, suggested_payout, created_at
                 FROM ai_decision
                 WHERE claim_id = %s
                 ORDER BY created_at DESC, decision_id DESC
@@ -179,6 +184,22 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
                 (claim_id,),
             )
             audit_row = cur.fetchone()
+            claim["audit_trail"] = []
+            if claim["ai_decisions"]:
+                cur.execute(
+                    """
+                    SELECT log_id, action_type, description, timestamp
+                    FROM audit_log
+                    WHERE decision_id = %s
+                    ORDER BY timestamp, log_id
+                    """,
+                    (claim["ai_decisions"][0]["decision_id"],),
+                )
+                claim["audit_trail"] = [
+                    dict(zip([col[0] for col in cur.description], log))
+                    for log in cur.fetchall()
+                ]
+
             claim["similar_image_match"] = None
             if audit_row and audit_row[0]:
                 payload = audit_row[0]
@@ -211,7 +232,14 @@ def get_claim(claim_id: int) -> dict[str, Any] | None:
     return attach_form_details(claim)
 
 
-def save_review(assessor_id: int, claim_id: int, outcome: str, notes: str) -> None:
+def save_review(
+    assessor_id: int,
+    claim_id: int,
+    outcome: str,
+    notes: str,
+    customer_explanation: str | None = None,
+    suggested_payout: float | None = None,
+) -> None:
     if outcome not in REVIEW_OUTCOMES:
         raise ReviewError("Choose a valid outcome.")
     if outcome == ClaimStatus.REJECTED.value and not notes.strip():
@@ -263,6 +291,39 @@ def save_review(assessor_id: int, claim_id: int, outcome: str, notes: str) -> No
                 """,
                 (outcome, outcome, claim_id),
             )
+            if customer_explanation is not None:
+                explanation = sanitize_free_text(customer_explanation)
+                cur.execute(
+                    """
+                    UPDATE ai_decision
+                    SET customer_explanation = %s
+                    WHERE decision_id = (
+                        SELECT decision_id FROM ai_decision
+                        WHERE claim_id = %s
+                        ORDER BY created_at DESC, decision_id DESC
+                        LIMIT 1
+                    )
+                    """,
+                    (explanation or None, claim_id),
+                )
+            if suggested_payout is not None:
+                cur.execute(
+                    "UPDATE claim SET cost = %s WHERE claim_id = %s",
+                    (suggested_payout, claim_id),
+                )
+                cur.execute(
+                    """
+                    UPDATE ai_decision
+                    SET suggested_payout = %s
+                    WHERE decision_id = (
+                        SELECT decision_id FROM ai_decision
+                        WHERE claim_id = %s
+                        ORDER BY created_at DESC, decision_id DESC
+                        LIMIT 1
+                    )
+                    """,
+                    (suggested_payout, claim_id),
+                )
         conn.commit()
     finally:
         conn.close()

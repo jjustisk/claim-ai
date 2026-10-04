@@ -5,6 +5,7 @@ from pathlib import Path
 import chromadb
 from chromadb.api import ClientAPI
 from chromadb.api.models.Collection import Collection
+from chromadb.config import Settings as ChromaSettings
 
 from app.config import settings
 
@@ -13,14 +14,28 @@ _client: ClientAPI | None = None
 PDS_CLAUSES_COLLECTION = "pds_clauses"
 
 
+def _http_client_settings() -> ChromaSettings | None:
+    """Build client auth settings when a Chroma server token is configured."""
+    token = (settings.chroma_auth_token or "").strip()
+    if not token:
+        return None
+    return ChromaSettings(
+        chroma_client_auth_provider="chromadb.auth.token_authn.TokenAuthClientProvider",
+        chroma_client_auth_credentials=token,
+        chroma_auth_token_transport_header="Authorization",
+    )
+
+
 def get_chroma_client() -> ClientAPI:
     """Return a shared ChromaDB client (HTTP server or local persistent storage)."""
     global _client
     if _client is None:
         if settings.chroma_host:
+            auth_settings = _http_client_settings()
             _client = chromadb.HttpClient(
                 host=settings.chroma_host,
                 port=settings.chroma_port,
+                settings=auth_settings,
             )
         else:
             persist_dir = Path(settings.chroma_persist_directory)

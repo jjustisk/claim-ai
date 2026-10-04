@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas.models import Assessor, Customer
 from app.config import settings
 from app.connectors.db import get_sync_connection
+from app.security import dummy_password_hash
 
 
 class InvalidCredentials(Exception):
@@ -26,7 +27,14 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
 
 
 def create_access_token(data: dict) -> str:
@@ -44,22 +52,37 @@ def decode_access_token(token: str) -> dict | None:
 
 
 async def authenticate(email: str, password: str, db: AsyncSession) -> dict:
+    email = _normalize_email(email)
     result = await db.execute(select(Assessor).where(Assessor.email == email))
     assessor = result.scalar_one_or_none()
-    if assessor and verify_password(password, assessor.hashed_password):
-        token = create_access_token(
-            {"sub": str(assessor.assessor_id), "role": "assessor", "email": assessor.email}
-        )
-        return {"access_token": token, "token_type": "bearer"}
+    if assessor is not None:
+        if verify_password(password, assessor.hashed_password):
+            token = create_access_token(
+                {
+                    "sub": str(assessor.assessor_id),
+                    "role": "assessor",
+                    "email": assessor.email,
+                }
+            )
+            return {"access_token": token, "token_type": "bearer"}
+        raise InvalidCredentials
 
     result = await db.execute(select(Customer).where(Customer.email == email))
     customer = result.scalar_one_or_none()
-    if customer and verify_password(password, customer.hashed_password):
-        token = create_access_token(
-            {"sub": str(customer.customer_id), "role": "claimant", "email": customer.email}
-        )
-        return {"access_token": token, "token_type": "bearer"}
+    if customer is not None:
+        if verify_password(password, customer.hashed_password):
+            token = create_access_token(
+                {
+                    "sub": str(customer.customer_id),
+                    "role": "claimant",
+                    "email": customer.email,
+                }
+            )
+            return {"access_token": token, "token_type": "bearer"}
+        raise InvalidCredentials
 
+    # Equalize timing when the account does not exist (avoid user-enumeration oracle).
+    verify_password(password, dummy_password_hash())
     raise InvalidCredentials
 
 

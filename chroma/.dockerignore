@@ -1,0 +1,4 @@
+# Chroma build context only needs the Dockerfile
+.git
+*.md
+.env*

@@ -268,6 +268,13 @@ class ClaimService:
                     image_pages_redacted=result.get("image_pages_redacted", 0),
                 )
 
+            # Final scrub so originals mapped from one field cannot remain in another
+            # (or in OCR / document text) and trip the LLM payload privacy gate.
+            sanitised_claim = registry.scrub_structure(sanitised_claim)
+            sanitised_texts = {
+                key: registry.scrub_known_values(value) for key, value in sanitised_texts.items()
+            }
+
             self.storage.write_sanitised_json(session_id, "claim.json", sanitised_claim)
             # Always emit a viewable redacted claim PDF for the Output UI
             claim_pdf_name = "claim.sanitised.pdf"
@@ -346,13 +353,26 @@ class ClaimService:
         payload = self.storage.read_llm_payload(session_id)
         if payload is None:
             raise FileNotFoundError("LLM payload not found")
-        # Safety: ensure mapping keys' values never appear
+        # Safety: ensure mapping values never appear. If a residual slips through
+        # (multi-field duplicates), scrub once more before hard-failing.
         mapping = self.storage.load_mapping(session_id)
-        blob = json.dumps(payload)
-        for original in mapping.values():
-            if original and original in blob:
-                raise RuntimeError("Raw PII detected in LLM payload — refusing to return")
-        return payload
+        registry = PlaceholderRegistry(mapping)
+        scrubbed = registry.scrub_structure(payload)
+        blob = json.dumps(scrubbed)
+        leaks = [
+            original
+            for original in mapping.values()
+            if original and len(str(original).strip()) >= 2 and original in blob
+        ]
+        if leaks:
+            sample = ", ".join(repr(v) for v in leaks[:5])
+            raise RuntimeError(
+                f"Raw PII detected in LLM payload — refusing to return "
+                f"({len(leaks)} value(s), e.g. {sample})"
+            )
+        if scrubbed != payload:
+            self.storage.write_llm_payload(session_id, scrubbed)
+        return scrubbed
 
     def rehydrate(
         self,

@@ -1,9 +1,7 @@
 """Call 2 — Consistency Check: compare Call 1's damage classification
 against the claimant's own account of the incident. Text only, no images.
 
-PII masking is deliberately skipped for now - sanitize_free_text() only
-strips control chars/HTML/injection phrases, not PII. Revisit before this
-handles real claimant data.
+Uses the PII-reduced claim record from the LLM payload (never raw ORM text).
 """
 
 from __future__ import annotations
@@ -16,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.schemas.models import Claim, ClaimDamageAssessment
 from app.connectors.foundry import get_gpt_client, get_mini_deployment
 from app.services.audit_log_service import get_or_create_decision, log_stage
+from app.services.claim_pii_service import sanitised_free_text
 from app.services.damage_description_services import get_latest_assessment
-from app.services.sanitization_service import sanitize_free_text
 
 
 class ConsistencyResult(BaseModel):
@@ -84,9 +82,12 @@ def _call_model(prompt: str) -> ConsistencyResult:
 
 
 def _build_claimant_text(claim: Claim) -> str:
-    parts = [claim.incident_description, claim.loss_description, claim.additional_comments]
-    combined = "\n\n".join(sanitize_free_text(p) for p in parts if p)
-    return combined or "(No claimant description provided.)"
+    return sanitised_free_text(
+        claim,
+        "incident_description",
+        "loss_description",
+        "additional_comments",
+    )
 
 
 def _build_prompt(assessment: ClaimDamageAssessment, claimant_text: str) -> str:

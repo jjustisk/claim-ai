@@ -27,6 +27,19 @@ const routes = [
     meta: { role: 'claimant' },
   },
   {
+    path: '/my-claims/new',
+    name: 'my-claims-new',
+    component: () => import('../views/customer/ClaimFormView.vue'),
+    meta: { role: 'claimant' },
+  },
+  {
+    path: '/my-claims/draft/:draftId',
+    name: 'my-claims-draft',
+    component: () => import('../views/customer/ClaimFormView.vue'),
+    meta: { role: 'claimant' },
+    props: true,
+  },
+  {
     path: '/my-claims/:id',
     name: 'my-claim-status',
     component: () => import('../views/customer/ClaimStatusView.vue'),
