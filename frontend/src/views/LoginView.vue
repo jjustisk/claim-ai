@@ -23,7 +23,10 @@ async function handleSubmit() {
     if (typeof redirect === 'string' && redirect.startsWith('/')) router.push(redirect)
     else router.push(user.role === 'assessor' ? { name: 'assessor-queue' } : { name: 'my-claims' })
   } catch (err) {
-    error.value = err instanceof ApiError ? errorText(err, 'The email or password is incorrect.') : 'Sign-in could not be completed. Please try again.'
+    error.value =
+      err instanceof ApiError
+        ? errorText(err, 'Sign-in could not be completed. Please try again.')
+        : 'Sign-in could not be completed. Please try again.'
   } finally {
     loading.value = false
   }

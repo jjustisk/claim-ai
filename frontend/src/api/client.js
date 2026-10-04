@@ -12,9 +12,29 @@ export function setToken(token) {
 class ApiError extends Error {
   constructor(status, detail) {
     super(typeof detail === 'string' ? detail : 'Request failed')
+    this.name = 'ApiError'
     this.status = status
     this.detail = detail
   }
+}
+
+function looksLikeMarkup(text) {
+  return typeof text === 'string' && (/<\/?[a-z][\s\S]*>/i.test(text) || /<!DOCTYPE/i.test(text))
+}
+
+function publicDetailFromBody(data) {
+  if (data == null) return null
+  if (typeof data === 'object' && data.detail != null) {
+    const detail = data.detail
+    if (typeof detail === 'string') {
+      return looksLikeMarkup(detail) ? null : detail
+    }
+    return detail
+  }
+  if (typeof data === 'string') {
+    return looksLikeMarkup(data) ? null : data.trim() || null
+  }
+  return null
 }
 
 async function request(path, { method = 'GET', body, form, formData, headers = {} } = {}) {
@@ -34,16 +54,25 @@ async function request(path, { method = 'GET', body, form, formData, headers = {
     opts.body = JSON.stringify(body)
   }
 
-  const res = await fetch(`${BASE}${path}`, opts)
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, opts)
+  } catch {
+    throw new ApiError(0, null)
+  }
 
   if (res.status === 204) return null
 
   const contentType = res.headers.get('content-type') || ''
-  const data = contentType.includes('application/json') ? await res.json() : await res.text()
+  let data = null
+  try {
+    data = contentType.includes('application/json') ? await res.json() : await res.text()
+  } catch {
+    data = null
+  }
 
   if (!res.ok) {
-    const detail = data && typeof data === 'object' ? data.detail : data
-    throw new ApiError(res.status, detail || `Request failed (${res.status})`)
+    throw new ApiError(res.status, publicDetailFromBody(data))
   }
   return data
 }
@@ -73,10 +102,15 @@ export const api = {
   documentUrl: (docId) => `${BASE}/claims/documents/${docId}`,
   async documentBlob(docId) {
     const token = getToken()
-    const res = await fetch(`${BASE}/claims/documents/${docId}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-    if (!res.ok) throw new ApiError(res.status, 'Could not open this file.')
+    let res
+    try {
+      res = await fetch(`${BASE}/claims/documents/${docId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+    } catch {
+      throw new ApiError(0, null)
+    }
+    if (!res.ok) throw new ApiError(res.status, null)
     const blob = await res.blob()
     return { url: URL.createObjectURL(blob), type: blob.type || res.headers.get('content-type') || '' }
   },
