@@ -85,11 +85,58 @@ export function aiBadge(decision) {
   return { label: 'Manual review', tone: 'amber' }
 }
 
-export function errorText(err, fallback) {
+const STATUS_MESSAGES = {
+  0: 'Unable to reach the service. Check your connection and try again.',
+  400: 'The request could not be processed. Please check your details and try again.',
+  401: 'Your session has expired. Please sign in again.',
+  403: 'You do not have permission to perform this action.',
+  404: 'The requested item could not be found.',
+  408: 'The request timed out. Please try again.',
+  413: 'The upload is too large. Please use smaller files.',
+  422: 'Some details could not be validated. Please review and try again.',
+  429: 'Too many attempts. Please wait a moment and try again.',
+  500: 'Something went wrong on our side. Please try again shortly.',
+  502: 'The service is temporarily unavailable. Please try again shortly.',
+  503: 'The service is temporarily unavailable. Please try again shortly.',
+  504: 'The service is still starting. Please wait a moment and try again.',
+}
+
+const INTERNAL_DETAIL = /traceback|exception:|error:|file ".*", line |stack|sqlalchemy|psycopg|internal server|nginx|<!doctype|<html|<head|<body|<pre/i
+
+function looksLikeMarkup(text) {
+  return /<\/?[a-z][\s\S]*>/i.test(text) || /<!DOCTYPE/i.test(text)
+}
+
+function cleanValidationMsg(msg) {
+  if (!msg || typeof msg !== 'string') return ''
+  // pydantic-style "Value error, ..." → keep the human part when present
+  return msg.replace(/^Value error,\s*/i, '').replace(/\s+/g, ' ').trim()
+}
+
+function isSafePublicDetail(text) {
+  if (!text || typeof text !== 'string') return false
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length > 240) return false
+  if (looksLikeMarkup(trimmed) || INTERNAL_DETAIL.test(trimmed)) return false
+  return true
+}
+
+/** User-facing API error copy — never returns HTML or stack traces. */
+export function errorText(err, fallback = 'Something went wrong. Please try again.') {
+  const status = Number(err?.status) || 0
+  const statusFallback = STATUS_MESSAGES[status] || fallback
   const detail = err?.detail
-  if (typeof detail === 'string' && detail) return detail
-  if (Array.isArray(detail)) {
-    return detail.map((item) => item?.msg || String(item)).join(' ')
+
+  if (typeof detail === 'string' && isSafePublicDetail(detail)) {
+    return detail.trim()
   }
-  return fallback
+
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => cleanValidationMsg(item?.msg || ''))
+      .filter((msg) => isSafePublicDetail(msg))
+    if (parts.length) return parts.slice(0, 3).join(' ')
+  }
+
+  return statusFallback
 }
