@@ -89,7 +89,12 @@ The old Dockerfile ran `pip install -r requirements.txt` **at image build time**
 That baked spaCy (`en_core_web_lg`), Chroma/ONNX, OpenCV, etc. into one huge layer.
 
 **New plan:** ship a thin **code-only** backend image. On first container start the
-entrypoint installs Python deps into the `python_deps` volume (cached for restarts).
+entrypoint installs Python deps into `/deps` (cached until `requirements.txt` changes):
+
+- **Local Compose:** `python_deps` named volume
+- **Azure ACA:** Azure Files share `python-deps` mounted at `/deps` (see `scripts/mount-backend-python-deps.ps1`)
+
+Code-only deploys reuse that volume — they do **not** reinstall spaCy/OpenCV/etc.
 
 ## Private Docker Hub deploy (recommended)
 
