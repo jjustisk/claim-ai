@@ -309,16 +309,48 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-      - name: Build & push backend
-        uses: docker/build-push-action@v6
-        with:
-          context: backend
-          push: true
-          tags: |
-            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:backend-${{ steps.meta.outputs.image_tag }}
-            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_REPO }}:backend-staging
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,mode=max,scope=backend
+      # Backend image is thin (deps install at ACA boot). Still skip Hub rebuild when the
+      # image inputs are unchanged — retag the prior content-addressed image instead.
+      - name: Backend image (build or reuse)
+        env:
+          NS: ${{ env.DOCKERHUB_NAMESPACE }}
+          REPO: ${{ env.IMAGE_REPO }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          # Hash only what the Dockerfile copies (+ Dockerfile / dockerignore).
+          # Unchanged hash → retag existing Hub image (no rebuild).
+          HASH_INPUTS=(Dockerfile .dockerignore requirements.txt app pii_reduction scripts docker)
+          if [ -f backend/requirements-pii-torch.txt ]; then
+            HASH_INPUTS+=(requirements-pii-torch.txt)
+          fi
+          HASH=$(
+            tar -C backend -cf - --exclude-from=backend/.dockerignore "${HASH_INPUTS[@]}" \
+              | sha256sum | cut -c1-16
+          )
+          SRC_TAG="${NS}/${REPO}:backend-src-${HASH}"
+          SHA_TAG="${NS}/${REPO}:backend-${IMAGE_TAG}"
+          FLOAT_TAG="${NS}/${REPO}:backend-staging"
+          echo "backend content hash=${HASH}"
+          echo "src_tag=${SRC_TAG}"
+
+          if docker buildx imagetools inspect "${SRC_TAG}" >/dev/null 2>&1; then
+            echo "Backend image inputs unchanged — retagging ${SRC_TAG} (skip rebuild)"
+            docker buildx imagetools create \
+              -t "${SHA_TAG}" \
+              -t "${FLOAT_TAG}" \
+              "${SRC_TAG}"
+          else
+            echo "Backend image inputs changed — building ${SRC_TAG}"
+            docker buildx build \
+              --push \
+              --cache-from "type=gha,scope=backend" \
+              --cache-to "type=gha,mode=max,scope=backend" \
+              -t "${SRC_TAG}" \
+              -t "${SHA_TAG}" \
+              -t "${FLOAT_TAG}" \
+              backend
+          fi
 
       - name: Build & push chroma
         uses: docker/build-push-action@v6

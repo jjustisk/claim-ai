@@ -14,7 +14,7 @@ PUSH → INSTALL → LINT → TEST → BUILD → SCAN → IMAGE → STAGING → 
 | **TEST** | PII unit tests + frontend module smoke |
 | **BUILD** | `vite build` + Python `compileall` |
 | **SCAN** | Trivy fs scan (`aquasecurity/trivy-action@v0.36.0`); reports CRITICAL/HIGH, fails on fixable CRITICAL |
-| **IMAGE** | Build/push `frontend` / `backend` / `chroma` to Docker Hub |
+| **IMAGE** | Build/push images to Docker Hub; **backend is skipped (retag only)** when Dockerfile/deps/copied sources are unchanged |
 | **STAGING** | Deploy to Azure Container Apps (`staging` environment) |
 | **APPROVE** | Manual gate (`production` environment reviewers) |
 | **PROD** | Retag images as `*-prod` and deploy |
