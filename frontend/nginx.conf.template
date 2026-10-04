@@ -42,8 +42,10 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_hide_header Server;
         proxy_hide_header X-Powered-By;
-        proxy_read_timeout 60s;
-        proxy_send_timeout 60s;
+        # Cold-start on ACA can exceed 60s — match /api/ so login does not 504.
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
     }
 
     location /api/ {
