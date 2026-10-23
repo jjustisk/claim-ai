@@ -16,8 +16,8 @@ export function formatMoney(value, { spaced = false } = {}) {
 export function confidencePercent(score) {
   if (score == null || score === '') return null
   const value = Number(score)
-  if (Number.isNaN(value)) return null
-  return value <= 1 ? Math.round(value * 100) : Math.round(value)
+  if (!Number.isFinite(value)) return null
+  return Math.min(100, Math.max(0, Math.round(value)))
 }
 
 const STATUS = {
@@ -33,14 +33,36 @@ export function statusMeta(status) {
   return STATUS[status] || { label: status || 'Unknown', tone: 'slate' }
 }
 
+const TONE_BADGE = {
+  amber: 'bg-yellow-100 text-yellow-800',
+  blue: 'bg-blue-100 text-blue-800',
+  green: 'bg-green-100 text-green-800',
+  red: 'bg-red-100 text-red-800',
+  slate: 'bg-gray-100 text-gray-800',
+}
+
+export function statusBadgeClass(status) {
+  return TONE_BADGE[statusMeta(status).tone] || TONE_BADGE.slate
+}
+
 export function urgency(claim) {
-  const fraud = Number(claim?.fraud_risk_score || 0)
-  if (fraud >= 0.3) return 'High'
-  if (fraud > 0) return 'Medium'
-  const priority = Number(claim?.priority_level || 0)
-  if (priority >= 3) return 'High'
-  if (priority >= 2) return 'Medium'
+  const fraud = Number(claim?.fraud_risk_score) || 0
+  const priority = Number(claim?.priority_level) || 0
+  if (fraud >= 0.5 || priority >= 3) return 'High'
+  if (fraud >= 0.3 || priority >= 2) return 'Medium'
   return 'Low'
+}
+
+const URGENCY_RANK = { High: 3, Medium: 2, Low: 1 }
+
+export function urgencyRank(claim) {
+  return URGENCY_RANK[urgency(claim)]
+}
+
+const URGENCY_TEXT = { High: 'text-red-600', Medium: 'text-yellow-600', Low: 'text-green-600' }
+
+export function urgencyClass(level) {
+  return URGENCY_TEXT[level] || 'text-gray-600'
 }
 
 const DAMAGE_LABELS = {

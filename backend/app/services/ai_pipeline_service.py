@@ -10,8 +10,6 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger(__name__)
-
 from app.api.schemas.models import AIDecision
 from app.services.audit_log_service import get_or_create_decision, log_stage
 from app.services.claim_pii_service import (
@@ -26,6 +24,8 @@ from app.services.damage_description_services import (
     assess_damage,
 )
 from app.services.decision_service import generate_decision
+
+logger = logging.getLogger(__name__)
 
 
 async def run_decision_pipeline(claim_id: int, db: AsyncSession) -> AIDecision | None:
@@ -51,8 +51,18 @@ async def run_decision_pipeline(claim_id: int, db: AsyncSession) -> AIDecision |
             decision_stub.decision_id,
             "pii_reduction",
             decision_stub.reason_summary,
+            output_payload={"pii_status": "failed"},
         )
         return None
+
+    decision_stub = await get_or_create_decision(db, claim_id)
+    await log_stage(
+        db,
+        decision_stub.decision_id,
+        "pii_reduction",
+        "Personal details were removed from the claim text and photos before any AI step.",
+        output_payload={"pii_status": "ready"},
+    )
 
     try:
         await assess_damage(claim_id, db)

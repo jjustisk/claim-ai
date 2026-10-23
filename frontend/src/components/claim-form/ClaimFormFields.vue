@@ -1,5 +1,8 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { api } from '../../api/client'
+import AddressSearch from './AddressSearch.vue'
+import FilePreviews from './FilePreviews.vue'
 import YesNoField from './YesNoField.vue'
 import PersonBlock from './PersonBlock.vue'
 import OtherPartyBlock from './OtherPartyBlock.vue'
@@ -46,13 +49,54 @@ const relationships = computed(() =>
   isMotor.value ? props.options.motor_relationships || [] : props.options.property_relationships || [],
 )
 
+const prefillNote = ref('')
+let prefillGeneration = 0
+
+// Fill empty fields only, so anything the customer typed or saved in a draft is kept.
+async function prefillFromPolicy(id) {
+  const current = ++prefillGeneration
+  prefillNote.value = ''
+  if (!id) return
+  try {
+    const prefill = await api.policyPrefill(id)
+    if (current !== prefillGeneration) return
+    const filled = Object.entries(prefill?.values || {}).filter(([key, value]) => {
+      if (!value || !(key in props.form) || String(props.form[key] || '').trim()) return false
+      props.form[key] = value
+      return true
+    })
+    if (filled.length) prefillNote.value = 'Some details were filled in from your account and policy schedule. Please check them.'
+  } catch {
+    // Pre-fill is a convenience; the form still works without it.
+  }
+}
+
 watch(
   () => props.form.policy_id,
   (id) => {
     const policy = props.policies.find((p) => String(p.policy_id) === String(id))
     props.form.policy_number = policy?.policy_number || ''
+    prefillFromPolicy(id)
   },
+  { immediate: true },
 )
+
+function fillAddress(prefix, address) {
+  const keys = prefix === 'incident'
+    ? { street_name: 'incident_street', suburb: 'incident_suburb', state: 'incident_state', postcode: 'incident_postcode' }
+    : {
+        street_number: 'holder_street_number',
+        street_name: 'holder_street_name',
+        suburb: 'holder_suburb',
+        state: 'holder_state',
+        postcode: 'holder_postcode',
+      }
+  for (const [field, key] of Object.entries(keys)) {
+    let value = address[field] || ''
+    if (prefix === 'incident' && field === 'street_name' && address.street_number) value = `${address.street_number} ${value}`
+    props.form[key] = value
+  }
+}
 
 watch(
   () => [props.form.holder_first_name, props.form.holder_last_name],
@@ -63,8 +107,26 @@ watch(
   },
 )
 
+const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'application/pdf']
+const dragging = ref(false)
+
 function onFiles(list) {
-  emit('update:files', [...props.files, ...list])
+  const accepted = [...(list || [])].filter((file) => ACCEPTED_TYPES.includes(file.type))
+  if (accepted.length) emit('update:files', [...props.files, ...accepted])
+}
+
+function onFileInput(event) {
+  onFiles(event.target.files)
+  event.target.value = ''
+}
+
+function onDrop(event) {
+  dragging.value = false
+  onFiles(event.dataTransfer?.files)
+}
+
+function removeFile(index) {
+  emit('update:files', props.files.filter((_, i) => i !== index))
 }
 
 function toggleArray(key, value, checked) {
@@ -79,8 +141,9 @@ function toggleArray(key, value, checked) {
 <template>
   <div class="space-y-8" :class="{ 'pointer-events-none opacity-60': disabled }">
     <section>
-      <h2 class="text-base font-bold text-slate-900">1. Claim type</h2>
+      <h2 class="text-base font-bold text-slate-900">1. Claim type<span class="text-red-600" aria-hidden="true"> *</span></h2>
       <p class="mt-1 text-sm text-slate-500">Select motor vehicle or property. The form will show the fields required for that claim type.</p>
+      <p class="mt-1 text-xs text-slate-500">Fields marked <span class="text-red-600">*</span> are required.</p>
       <div class="mt-4 grid gap-3 sm:grid-cols-2">
         <label
           v-for="type in insuranceTypes"
@@ -102,7 +165,7 @@ function toggleArray(key, value, checked) {
         <h2 class="text-base font-bold">2. Policy details</h2>
         <div class="mt-3 grid gap-4 sm:grid-cols-2">
           <label class="block text-sm">
-            <span class="mb-1 block font-medium">Policy</span>
+            <span class="mb-1 block font-medium">Policy<span class="text-red-600" aria-hidden="true"> *</span></span>
             <select v-model="form.policy_id" class="field" required>
               <option value="">Select a policy</option>
               <option v-for="p in visiblePolicies" :key="p.policy_id" :value="String(p.policy_id)">
@@ -115,6 +178,7 @@ function toggleArray(key, value, checked) {
             <input v-model="form.policy_number" class="field bg-slate-50" readonly />
           </label>
         </div>
+        <p v-if="prefillNote" class="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">{{ prefillNote }}</p>
       </section>
 
       <section>
@@ -128,17 +192,18 @@ function toggleArray(key, value, checked) {
             </select>
           </label>
           <label class="block text-sm">
-            <span class="mb-1 block font-medium">First name</span>
+            <span class="mb-1 block font-medium">First name<span class="text-red-600" aria-hidden="true"> *</span></span>
             <input v-model="form.holder_first_name" class="field" required />
           </label>
           <label class="block text-sm">
-            <span class="mb-1 block font-medium">Last name</span>
+            <span class="mb-1 block font-medium">Last name<span class="text-red-600" aria-hidden="true"> *</span></span>
             <input v-model="form.holder_last_name" class="field" required />
           </label>
           <label class="block text-sm sm:col-span-2">
             <span class="mb-1 block font-medium">Company name</span>
             <input v-model="form.holder_company" class="field" />
           </label>
+          <AddressSearch class="sm:col-span-2" label="Find your address" @select="fillAddress('holder', $event)" />
           <label class="block text-sm">
             <span class="mb-1 block font-medium">Street number</span>
             <input v-model="form.holder_street_number" class="field" required />
@@ -170,11 +235,11 @@ function toggleArray(key, value, checked) {
             </select>
           </label>
           <label class="block text-sm">
-            <span class="mb-1 block font-medium">Email</span>
+            <span class="mb-1 block font-medium">Email<span class="text-red-600" aria-hidden="true"> *</span></span>
             <input v-model="form.holder_email" type="email" class="field" required />
           </label>
           <label class="block text-sm">
-            <span class="mb-1 block font-medium">Phone</span>
+            <span class="mb-1 block font-medium">Phone<span class="text-red-600" aria-hidden="true"> *</span></span>
             <input v-model="form.holder_phone" class="field" required />
           </label>
           <label class="block text-sm">
@@ -227,7 +292,7 @@ function toggleArray(key, value, checked) {
         <h2 class="text-base font-bold">6. Incident details</h2>
         <div class="mt-3 grid gap-4 sm:grid-cols-2">
           <label class="block text-sm">
-            <span class="mb-1 block font-medium">Date the incident occurred</span>
+            <span class="mb-1 block font-medium">Date the incident occurred<span class="text-red-600" aria-hidden="true"> *</span></span>
             <input v-model="form.incident_date" type="date" class="field" required />
           </label>
           <label class="block text-sm">
@@ -236,14 +301,14 @@ function toggleArray(key, value, checked) {
           </label>
         </div>
         <label v-if="isProperty" class="mt-4 block text-sm">
-          <span class="mb-1 block font-medium">What type of claim are you making?</span>
+          <span class="mb-1 block font-medium">What type of claim are you making?<span class="text-red-600" aria-hidden="true"> *</span></span>
           <select v-model="form.property_claim_type" class="field" required>
             <option value="">Select</option>
             <option v-for="t in options.property_claim_types || []" :key="t.value" :value="t.value">{{ t.label }}</option>
           </select>
         </label>
         <label class="mt-4 block text-sm">
-          <span class="mb-1 block font-medium">Incident description</span>
+          <span class="mb-1 block font-medium">Incident description<span class="text-red-600" aria-hidden="true"> *</span></span>
           <textarea v-model="form.incident_description" rows="4" class="field" required placeholder="Provide a clear description of the incident…" />
         </label>
         <div v-if="isProperty" class="mt-3">
@@ -253,8 +318,9 @@ function toggleArray(key, value, checked) {
         <div v-if="showIncidentLocation" class="mt-4">
           <h3 class="mb-2 text-sm font-semibold">Where did the incident occur?</h3>
           <div class="grid gap-4 sm:grid-cols-2">
+            <AddressSearch class="sm:col-span-2" label="Find the incident location" @select="fillAddress('incident', $event)" />
             <label class="block text-sm">
-              <span class="mb-1 block font-medium">Street name</span>
+              <span class="mb-1 block font-medium">Street address<span v-if="isMotor" class="text-red-600" aria-hidden="true"> *</span></span>
               <input v-model="form.incident_street" class="field" :required="isMotor" />
             </label>
             <label v-if="isMotor" class="block text-sm">
@@ -282,7 +348,7 @@ function toggleArray(key, value, checked) {
 
       <section>
         <h2 class="text-base font-bold">7. Your details</h2>
-        <p class="mb-2 text-sm font-medium">Are you our policy holder?</p>
+        <p class="mb-2 text-sm font-medium">Are you our policy holder?<span class="text-red-600" aria-hidden="true"> *</span></p>
         <YesNoField v-model="form.is_policyholder" name="is_policyholder" required />
         <div v-if="showReporter" class="mt-4 space-y-3">
           <label class="block text-sm">
@@ -340,7 +406,7 @@ function toggleArray(key, value, checked) {
       <section v-if="isMotor" class="space-y-6">
         <div>
           <h2 class="text-base font-bold">10. Driver details</h2>
-          <p class="mb-2 text-sm font-medium">Was the insured vehicle being driven?</p>
+          <p class="mb-2 text-sm font-medium">Was the insured vehicle being driven?<span class="text-red-600" aria-hidden="true"> *</span></p>
           <YesNoField v-model="form.vehicle_driven" name="vehicle_driven" />
           <div v-if="showDriver" class="mt-4 grid gap-4 sm:grid-cols-2">
             <div class="sm:col-span-2">
@@ -361,7 +427,7 @@ function toggleArray(key, value, checked) {
         <div>
           <h2 class="text-base font-bold">11. Vehicle details</h2>
           <div class="mt-3 grid gap-4 sm:grid-cols-2">
-            <label class="block text-sm"><span class="mb-1 block font-medium">Registration</span><input v-model="form.vehicle_registration" class="field" required /></label>
+            <label class="block text-sm"><span class="mb-1 block font-medium">Registration<span class="text-red-600" aria-hidden="true"> *</span></span><input v-model="form.vehicle_registration" class="field" required /></label>
             <label class="block text-sm">
               <span class="mb-1 block font-medium">Vehicle type</span>
               <select v-model="form.vehicle_type" class="field" required>
@@ -369,8 +435,8 @@ function toggleArray(key, value, checked) {
                 <option v-for="t in options.vehicle_types || []" :key="t.value" :value="t.value">{{ t.label }}</option>
               </select>
             </label>
-            <label class="block text-sm"><span class="mb-1 block font-medium">Year</span><input v-model="form.vehicle_year" class="field" required /></label>
-            <label class="block text-sm"><span class="mb-1 block font-medium">Make</span><input v-model="form.vehicle_make" class="field" required /></label>
+            <label class="block text-sm"><span class="mb-1 block font-medium">Year<span class="text-red-600" aria-hidden="true"> *</span></span><input v-model="form.vehicle_year" class="field" required /></label>
+            <label class="block text-sm"><span class="mb-1 block font-medium">Make<span class="text-red-600" aria-hidden="true"> *</span></span><input v-model="form.vehicle_make" class="field" required /></label>
             <label class="block text-sm sm:col-span-2"><span class="mb-1 block font-medium">Model</span><input v-model="form.vehicle_model" class="field" /></label>
           </div>
           <div class="mt-3">
@@ -478,14 +544,19 @@ function toggleArray(key, value, checked) {
 
       <section>
         <h2 class="text-base font-bold">14. Supporting documents</h2>
-        <label class="mt-3 grid cursor-pointer place-items-center rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center">
-          <input class="hidden" type="file" multiple accept="image/jpeg,image/png,application/pdf" @change="onFiles($event.target.files)" />
+        <label
+          class="mt-3 grid cursor-pointer place-items-center rounded-xl border border-dashed px-4 py-8 text-center transition-colors"
+          :class="dragging ? 'border-blue-400 bg-blue-50' : 'border-slate-300 bg-slate-50'"
+          @dragover.prevent="dragging = true"
+          @dragleave="dragging = false"
+          @drop.prevent="onDrop"
+        >
+          <input class="hidden" type="file" multiple accept="image/jpeg,image/png,application/pdf" @change="onFileInput" />
           <span class="text-sm text-slate-600">Drag and drop files here, or browse to select</span>
           <span class="text-xs text-slate-400">JPEG, PNG or PDF. Max 25 MB per file.</span>
         </label>
-        <ul v-if="files.length" class="mt-2 space-y-1 text-sm text-slate-600">
-          <li v-for="(file, i) in files" :key="`${file.name}-${i}`">{{ file.name }}</li>
-        </ul>
+        <FilePreviews :files="files" @remove="removeFile" />
+        <p v-if="files.length" class="mt-2 text-xs text-slate-400">Click a file to open it in a new tab.</p>
         <label class="mt-4 block text-sm">
           <span class="mb-1 block font-medium">Additional comments</span>
           <textarea v-model="form.additional_comments" rows="3" class="field" />
@@ -497,11 +568,11 @@ function toggleArray(key, value, checked) {
         <p class="mt-1 text-sm text-slate-500">I certify that the information given is truthful, accurate and complete.</p>
         <label class="mt-3 flex items-start gap-2 text-sm">
           <input v-model="form.declaration_accepted" type="checkbox" required />
-          <span>I confirm the declaration above.</span>
+          <span>I confirm the declaration above.<span class="text-red-600" aria-hidden="true"> *</span></span>
         </label>
         <div class="mt-3 grid gap-4 sm:grid-cols-2">
           <label class="block text-sm">
-            <span class="mb-1 block font-medium">Signature / name</span>
+            <span class="mb-1 block font-medium">Signature / name<span class="text-red-600" aria-hidden="true"> *</span></span>
             <input v-model="form.declaration_name" class="field" @input="form._declarationTouched = true" />
           </label>
           <label class="block text-sm">

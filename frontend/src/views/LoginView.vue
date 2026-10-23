@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { AlertCircle, ArrowRight, Shield } from 'lucide-vue-next'
 import { useAuth, ApiError } from '../stores/auth'
 import { errorText } from '../utils/claim'
 
@@ -34,46 +35,67 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <div class="grid min-h-screen place-items-center bg-white px-4 py-10">
-    <div class="w-full max-w-md text-center">
-      <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg shadow-blue-600/30">
-        <svg viewBox="0 0 24 24" class="h-7 w-7" fill="none" stroke="currentColor" stroke-width="1.8">
-          <path d="M12 3 5 6v6c0 4.2 2.8 7.4 7 9 4.2-1.6 7-4.8 7-9V6l-7-3Z" stroke-linejoin="round" />
-          <path d="m9 12 2 2 4-4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+  <div class="flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+    <div class="w-full max-w-md">
+      <div class="mb-8 text-center">
+        <div class="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full bg-blue-600">
+          <Shield class="h-8 w-8 text-white" />
+        </div>
+        <h1 class="text-3xl font-bold text-gray-900">Claim-AI</h1>
+        <p class="mt-2 text-gray-600">Enterprise claims assessment platform</p>
       </div>
-      <h1 class="text-3xl font-extrabold tracking-tight text-slate-900">Claim-AI</h1>
-      <p class="mt-1 text-sm text-slate-500">Enterprise claims assessment platform</p>
 
-      <form class="mt-8 rounded-2xl bg-white px-8 py-7 text-left shadow-xl shadow-slate-200/80" @submit.prevent="handleSubmit">
-        <h2 class="mb-5 text-lg font-bold text-slate-900">
+      <div class="rounded-lg bg-white p-8 shadow-lg">
+        <h2 class="mb-6 text-xl font-semibold text-gray-900">
           {{ portal === 'assessor' ? 'Assessor sign in' : 'Customer sign in' }}
         </h2>
-        <label class="mb-1.5 block text-sm font-medium text-slate-700" for="email">Email Address</label>
-        <input
-          id="email"
-          v-model="email"
-          type="email"
-          required
-          :placeholder="portal === 'assessor' ? 'assessor@insurance.com' : 'customer@email.com'"
-          class="field mb-4"
-        />
-        <label class="mb-1.5 block text-sm font-medium text-slate-700" for="password">Password</label>
-        <input id="password" v-model="password" type="password" required placeholder="••••••••" class="field" />
-        <p v-if="error" class="mt-3 text-sm text-red-600">{{ error }}</p>
-        <button type="submit" class="btn-primary mt-5 w-full" :disabled="loading">
-          {{ loading ? 'Signing in…' : 'Sign in' }}
-        </button>
-        <button
-          type="button"
-          class="mt-4 w-full text-sm font-medium text-blue-600 hover:text-blue-700"
-          @click="portal = portal === 'assessor' ? 'customer' : 'assessor'"
-        >
-          {{ portal === 'assessor' ? 'Switch to customer portal' : 'Switch to assessor portal' }}
-        </button>
-      </form>
+        <form class="space-y-4" @submit.prevent="handleSubmit">
+          <div>
+            <label class="mb-1 block text-sm font-medium text-gray-700" for="email">Email Address</label>
+            <input
+              id="email"
+              v-model="email"
+              type="email"
+              required
+              autocomplete="username"
+              :placeholder="portal === 'assessor' ? 'assessor@insurance.com' : 'customer@email.com'"
+              class="field"
+            />
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-gray-700" for="password">Password</label>
+            <input
+              id="password"
+              v-model="password"
+              type="password"
+              required
+              autocomplete="current-password"
+              placeholder="••••••••"
+              class="field"
+            />
+          </div>
+          <p v-if="error" class="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{{ error }}</span>
+          </p>
+          <button type="submit" class="btn-primary w-full py-3 text-base" :disabled="loading">
+            {{ loading ? 'Signing in…' : 'Sign in' }}
+            <ArrowRight v-if="!loading" class="h-4 w-4" />
+          </button>
+        </form>
 
-      <p class="mx-auto mt-8 max-w-sm text-xs leading-relaxed text-slate-400">
+        <div class="mt-6 border-t border-gray-200 pt-6">
+          <button
+            type="button"
+            class="w-full py-2 text-sm text-blue-600 hover:text-blue-700"
+            @click="portal = portal === 'assessor' ? 'customer' : 'assessor'"
+          >
+            {{ portal === 'assessor' ? 'Switch to customer portal' : 'Switch to assessor portal' }}
+          </button>
+        </div>
+      </div>
+
+      <p class="mt-6 text-center text-sm text-gray-600">
         Secure access for authorised claimants and claims assessors.
       </p>
     </div>

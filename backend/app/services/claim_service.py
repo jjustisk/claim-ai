@@ -35,6 +35,7 @@ from app.services.claim_form import (
     save_form_children,
     validate_submit,
 )
+from app.services.claim_pii_service import rehydrate_assessor_text
 from app.services.claim_pipeline_queue import enqueue_claim_pipeline
 from app.services.notification_service import notify_claim_submitted
 
@@ -141,8 +142,114 @@ def get_customer_profile(customer_id: int) -> dict[str, str | None]:
         conn.close()
 
 
+_CLAIMANT_HIDDEN_FIELDS = ("llm_payload_json", "pii_session_id", "fraud_risk_score", "priority_level")
+_REVIEWED_STATUSES = {"under_review", "approved", "rejected", "closed"}
+_OUTCOME_LABELS = {"approved": "Claim approved", "rejected": "Claim declined", "closed": "Claim closed"}
+_AI_DECISIONS_BY_OUTCOME = {"approved": {"covered", "partial"}, "rejected": {"excluded"}}
+_OUTCOME_DEFAULT_EXPLANATION = {
+    "approved": "Our assessor has approved your claim. We'll be in touch shortly about the next steps.",
+    "rejected": (
+        "Our assessor has reviewed your claim and is unable to approve it. "
+        "If you have any questions or would like the decision reviewed, please contact us."
+    ),
+    "closed": "Your claim has been closed. Please contact us if you have any questions.",
+}
+
+
+def _iso_utc(value: Any) -> str | None:
+    """Format a DB timestamp as ISO 8601, treating naive values as UTC."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return str(value)
+
+
+def _fetch_tracking_signals(cur: Any, claim_id: int) -> dict[str, Any]:
+    """Read the latest AI decision, when it finished, and the first assessor review."""
+    cur.execute(
+        """
+        SELECT
+            d.decision,
+            d.customer_explanation,
+            COALESCE(
+                (SELECT MAX(a.timestamp) FROM audit_log a
+                 WHERE a.decision_id = d.decision_id AND a.action_type = 'generation'),
+                (SELECT MAX(a.timestamp) FROM audit_log a WHERE a.decision_id = d.decision_id),
+                d.created_at
+            ) AS finished_at
+        FROM ai_decision d
+        WHERE d.claim_id = %s
+        ORDER BY d.created_at DESC, d.decision_id DESC
+        LIMIT 1
+        """,
+        (claim_id,),
+    )
+    decision_row = cur.fetchone()
+    cur.execute("SELECT MIN(review_date) FROM reviews WHERE claim_id = %s", (claim_id,))
+    review_row = cur.fetchone()
+    ai_finished = bool(decision_row and decision_row[0] and decision_row[0] != "pending")
+    return {
+        "ai_finished": ai_finished,
+        "ai_finished_at": decision_row[2] if ai_finished else None,
+        "ai_decision": decision_row[0] if decision_row else None,
+        "customer_explanation": decision_row[1] if decision_row else None,
+        "first_review_at": review_row[0] if review_row else None,
+    }
+
+
+def _build_progress(
+    *,
+    status: str | None,
+    submitted_at: Any,
+    ai_finished: bool,
+    ai_finished_at: Any,
+    first_review_at: Any,
+    outcome_date: Any,
+) -> dict[str, Any]:
+    """Build the claimant milestone timeline; the first stage not yet done is the active one."""
+    resolved = status in _OUTCOME_LABELS
+    reviewed = status in _REVIEWED_STATUSES or first_review_at is not None
+    stages = [
+        ("submitted", "Claim Submitted", True, submitted_at),
+        ("ai_analysis", "AI Analysis Complete", ai_finished, ai_finished_at),
+        ("under_review", "Under Assessor Review", reviewed, first_review_at),
+        ("resolved", "Claim Resolved", resolved, outcome_date),
+    ]
+    # A later stage being done implies the earlier ones are behind the claim too.
+    last_done = max(index for index, stage in enumerate(stages) if stage[2])
+    milestones = []
+    for index, (key, label, _done, timestamp) in enumerate(stages):
+        if index <= last_done:
+            state = "done"
+        elif index == last_done + 1:
+            state = "active"
+        else:
+            state = "pending"
+        milestones.append({
+            "key": key,
+            "label": label,
+            "state": state,
+            "timestamp": _iso_utc(timestamp) if state == "done" else None,
+        })
+
+    if resolved:
+        current = _OUTCOME_LABELS[status]
+    elif reviewed:
+        current = "Being reviewed by an assessor"
+    elif ai_finished:
+        current = "AI analysis complete — awaiting assessor review"
+    else:
+        current = "Waiting for automated assessment"
+    return {"current_status_label": current, "resolved": resolved, "milestones": milestones}
+
+
 def get_customer_claim(claim_id: int, customer_id: int) -> dict[str, Any] | None:
+    """Load a claimant's own claim with documents, form details and progress tracking."""
     conn = get_sync_connection()
+    tracking: dict[str, Any] | None = None
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -175,8 +282,39 @@ def get_customer_claim(claim_id: int, customer_id: int) -> dict[str, Any] | None
                 dict(zip([col[0] for col in cur.description], doc))
                 for doc in cur.fetchall()
             ]
+            if claim.get("status") != ClaimStatus.DRAFT.value:
+                tracking = _fetch_tracking_signals(cur, claim_id)
     finally:
         conn.close()
+
+    if tracking is not None:
+        status = claim.get("status")
+        progress = _build_progress(
+            status=status,
+            submitted_at=claim.get("submission_date"),
+            ai_finished=tracking["ai_finished"],
+            ai_finished_at=tracking["ai_finished_at"],
+            first_review_at=tracking["first_review_at"],
+            outcome_date=claim.get("outcome_date"),
+        )
+        claim["progress"] = progress
+        claim["outcome"] = None
+        if progress["resolved"]:
+            explanation = tracking["customer_explanation"]
+            if tracking["ai_decision"] not in _AI_DECISIONS_BY_OUTCOME.get(status, set()):
+                explanation = _OUTCOME_DEFAULT_EXPLANATION[status]
+            elif explanation:
+                explanation = rehydrate_assessor_text(
+                    explanation, claim_id=claim_id, session_id=claim.get("pii_session_id")
+                )
+            claim["outcome"] = {
+                "status": status,
+                "label": _OUTCOME_LABELS[status],
+                "explanation": explanation or None,
+            }
+
+    for key in _CLAIMANT_HIDDEN_FIELDS:
+        claim.pop(key, None)
     return attach_form_details(claim)
 
 
