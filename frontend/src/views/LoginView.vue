@@ -9,10 +9,9 @@ const email = ref('')
 const password = ref('')
 const error = ref('')
 const loading = ref(false)
-const portal = ref('assessor')
-
 const router = useRouter()
 const route = useRoute()
+const portal = ref(route.query.portal === 'customer' ? 'customer' : 'assessor')
 const { login } = useAuth()
 
 async function handleSubmit() {
