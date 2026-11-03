@@ -94,26 +94,32 @@ export const api = {
   myClaims: () => request('/claims/mine'),
   myClaimDetail: (id) => request(`/claims/mine/${id}`),
   policies: () => request('/policies/'),
+  policyPrefill: (policyId) => request(`/policies/${policyId}/prefill`),
+  searchAddresses: (q) => request(`/addresses/search?q=${encodeURIComponent(q)}`),
   formOptions: () => request('/claims/form-options'),
   submitClaim: (formData) => request('/claims/', { method: 'POST', formData }),
   deleteDraft: (claimId) => request(`/claims/${claimId}`, { method: 'DELETE' }),
 
+  claimPolicyDocument: (claimId) => fetchBlob(`/claims/${claimId}/policy-document`),
+
   // shared
   documentUrl: (docId) => `${BASE}/claims/documents/${docId}`,
-  async documentBlob(docId) {
-    const token = getToken()
-    let res
-    try {
-      res = await fetch(`${BASE}/claims/documents/${docId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-    } catch {
-      throw new ApiError(0, null)
-    }
-    if (!res.ok) throw new ApiError(res.status, null)
-    const blob = await res.blob()
-    return { url: URL.createObjectURL(blob), type: blob.type || res.headers.get('content-type') || '' }
-  },
+  documentBlob: (docId) => fetchBlob(`/claims/documents/${docId}`),
+}
+
+async function fetchBlob(path) {
+  const token = getToken()
+  let res
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+  } catch {
+    throw new ApiError(0, null)
+  }
+  if (!res.ok) throw new ApiError(res.status, null)
+  const blob = await res.blob()
+  return { url: URL.createObjectURL(blob), type: blob.type || res.headers.get('content-type') || '' }
 }
 
 export { ApiError }

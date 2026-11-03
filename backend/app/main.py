@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import app.api.schemas.models
+from app.api.routers import addresses as addresses_router
 from app.api.routers import auth as auth_router
 from app.api.routers import claims as claims_router
 from app.api.routers import policies as policies_router
@@ -77,6 +78,7 @@ if _hosts:
 app.include_router(auth_router.router, prefix="/api")
 app.include_router(claims_router.router, prefix="/api")
 app.include_router(policies_router.router, prefix="/api")
+app.include_router(addresses_router.router, prefix="/api")
 
 if settings.test_ui_enabled():
     from app.pages import orchestration_test as orchestration_test_pages

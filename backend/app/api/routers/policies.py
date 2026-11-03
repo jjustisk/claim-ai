@@ -15,6 +15,7 @@ from app.services.claim_service import (
     list_policies,
     list_policy_documents,
 )
+from app.services.policy_prefill_service import get_policy_prefill
 from app.connectors.storage import download_stored_blob
 
 router = APIRouter(prefix="/policies", tags=["policies"])
@@ -23,6 +24,15 @@ router = APIRouter(prefix="/policies", tags=["policies"])
 @router.get("/", response_model=list[PolicyOut])
 def policies(user: dict = Depends(require_claimant)) -> list[PolicyOut]:
     return [PolicyOut(**row) for row in list_policies(int(user["sub"]))]
+
+
+@router.get("/{policy_id}/prefill")
+def policy_prefill(policy_id: int, user: dict = Depends(require_claimant)) -> dict:
+    """Claim form values from the customer's account and this policy's schedule."""
+    prefill = get_policy_prefill(policy_id, int(user["sub"]))
+    if prefill is None:
+        raise HTTPException(404, "Policy not found.")
+    return prefill
 
 
 @router.get("/{policy_id}/documents", response_model=list[PolicyDocumentOut])

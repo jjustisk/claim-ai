@@ -85,7 +85,7 @@ def _format_table_chunk(table: list[list[str | None]]) -> str:
 
 
 def extract_chunks(pdf_bytes: bytes) -> list[dict]:
-    """Parse a PDS PDF into a list of {section_ref, title, text, chunk_type} chunks."""
+    """Parse a PDS PDF into a list of {section_ref, title, text, chunk_type, page} chunks."""
     chunks: list[dict] = []
     section_ref: str | None = None
     title: str | None = None
@@ -94,6 +94,7 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
     in_appendix = False  # one-way latch: once True, never reset (see below)
     last_top_level_ref: str | None = None
     chunk_type = "coverage"  # reset whenever a new top-level heading is seen
+    heading_page = 1  # 1-based page the open heading starts on
 
     def flush() -> None:
         nonlocal body
@@ -106,12 +107,13 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
                         "title": title or "",
                         "text": f"{section_ref} {title}\n{text}".strip(),
                         "chunk_type": chunk_type,
+                        "page": heading_page,
                     }
                 )
         body = []
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
+        for page_number, page in enumerate(pdf.pages, start=1):
             tables = page.find_tables()
             table_bboxes = [t.bbox for t in tables]
 
@@ -148,11 +150,13 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
                     flush()
                     num, sub, heading_title = sub_match.groups()
                     section_ref, title = f"{num}.{sub}", heading_title
+                    heading_page = page_number
                     continue
                 if top_match:
                     flush()
                     num, heading_title = top_match.groups()
                     section_ref, title = f"{num}.", heading_title
+                    heading_page = page_number
                     excluded = _is_excluded_title(heading_title)
                     last_top_level_ref = section_ref
                     lowered_title = heading_title.lower()
@@ -184,6 +188,7 @@ def extract_chunks(pdf_bytes: bytes) -> list[dict]:
                                 "title": title or "",
                                 "text": text,
                                 "chunk_type": "definition" if _table_is_definitions(table) else chunk_type,
+                                "page": page_number,
                             }
                         )
 
@@ -209,6 +214,7 @@ def ingest_product_pds(*, pds_id: int, product_id: int, version: str, pdf_bytes:
             "section_ref": c["section_ref"],
             "chunk_index": i,
             "chunk_type": c["chunk_type"],
+            "page": int(c.get("page") or 1),
         }
         for i, c in enumerate(chunks)
     ]

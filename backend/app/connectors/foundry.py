@@ -80,10 +80,19 @@ def get_foundry_project_client() -> AIProjectClient:
 
 
 def get_gpt_client() -> OpenAI:
-    """Return the OpenAI-compatible client for Foundry chat models."""
+    """Return the OpenAI-compatible client for Foundry chat models (account-level v1 endpoint)."""
     global _gpt_client
     if _gpt_client is None:
-        _gpt_client = get_foundry_project_client().get_openai_client()
+        from openai import OpenAI
+
+        token_provider = get_bearer_token_provider(
+            _get_credential(),
+            "https://ai.azure.com/.default",
+        )
+        _gpt_client = OpenAI(
+            base_url=f"{_services_endpoint()}/openai/v1/",
+            api_key=token_provider,
+        )
     return _gpt_client
 
 

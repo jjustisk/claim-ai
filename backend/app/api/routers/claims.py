@@ -1,5 +1,7 @@
 """JSON claims API. Vue will call these; the test UI in pages/ is temporary."""
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +19,9 @@ from app.services.assessor_decision_brief_service import build_assessor_decision
 from app.services.assessor_service import (
     ReviewError,
     claim_counts,
+    customer_explanation_edited,
     download_claim_document,
+    download_claim_policy_document,
     evidence_download_response,
     get_claim,
     list_claims,
@@ -33,6 +37,7 @@ from app.services.claim_service import (
     list_customer_claims,
     submit_claim,
 )
+from app.services.notification_service import notify_review_outcome
 
 router = APIRouter(prefix="/claims", tags=["claims"])
 
@@ -117,6 +122,23 @@ async def claim_decision_brief(
     return AssessorDecisionBriefOut(**brief)
 
 
+@router.get("/{claim_id}/policy-document")
+async def claim_policy_document(
+    claim_id: int,
+    _user: dict = Depends(require_assessor),
+) -> Response:
+    from azure.core.exceptions import ResourceNotFoundError
+
+    try:
+        downloaded = await download_claim_policy_document(claim_id)
+    except (ResourceNotFoundError, FileNotFoundError):
+        raise HTTPException(404, "Policy document file not found in storage.") from None
+    if downloaded is None:
+        raise HTTPException(404, "No policy document (PDS) is on file for this claim.")
+    data, filename = downloaded
+    return evidence_download_response(data, filename, "application/pdf", disposition="inline")
+
+
 @router.get("/{claim_id}")
 def claim_detail(claim_id: int, _user: dict = Depends(require_assessor)) -> dict:
     claim = get_claim(claim_id)
@@ -134,15 +156,18 @@ async def delete_draft(claim_id: int, user: dict = Depends(require_claimant)) ->
 
 
 @router.post("/{claim_id}/review")
-def claim_review(
+async def claim_review(
     claim_id: int,
     body: ReviewIn,
     user: dict = Depends(require_assessor),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    if get_claim(claim_id) is None:
+    before = await asyncio.to_thread(get_claim, claim_id)
+    if before is None:
         raise HTTPException(404, "Claim not found.")
     try:
-        save_review(
+        await asyncio.to_thread(
+            save_review,
             int(user["sub"]),
             claim_id,
             body.outcome,
@@ -152,7 +177,19 @@ def claim_review(
         )
     except ReviewError as exc:
         raise HTTPException(400, str(exc)) from exc
-    claim = get_claim(claim_id)
+    claim = await asyncio.to_thread(get_claim, claim_id)
+    if claim is None:
+        raise HTTPException(404, "Claim not found.")
+    latest = (claim.get("ai_decisions") or [{}])[0]
+    await notify_review_outcome(
+        db,
+        claim_id=claim_id,
+        outcome=body.outcome,
+        explanation=(claim.get("ai_assessment") or {}).get("customer_explanation"),
+        ai_decision=latest.get("decision"),
+        decision_id=latest.get("decision_id"),
+        edited=customer_explanation_edited(before, body.customer_explanation),
+    )
     return jsonable_encoder(claim)
 
 
