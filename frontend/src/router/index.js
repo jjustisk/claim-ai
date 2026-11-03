@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '../stores/auth'
 
 const routes = [
+  { path: '/', name: 'welcome', component: () => import('../views/WelcomeView.vue'), meta: { public: true } },
   { path: '/login', name: 'login', component: () => import('../views/LoginView.vue'), meta: { public: true } },
 
   // Assessor
@@ -47,7 +48,6 @@ const routes = [
     props: true,
   },
 
-  { path: '/', redirect: () => '/login' },
 ]
 
 export const router = createRouter({
