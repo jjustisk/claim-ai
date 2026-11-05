@@ -38,6 +38,7 @@ from app.services.damage_description_services import (
     get_latest_damage_details,
 )
 from app.services.fraud_scoring_service import compute_fraud_flag
+from app.services.notification_service import notify_assessor_review
 from app.services.policy_retrieval_service import retrieve_clauses
 from app.services.policy_schedule_ingestion_service import parse_scenario_excesses
 
@@ -553,6 +554,8 @@ async def _persist(
             claim.fraud_risk_score = fraud_flag
             await db.commit()
 
+    # Every saved recommendation, including a referral, goes to a person next.
+    await notify_assessor_review(db, claim_id=claim_id, decision_id=record.decision_id)
     return record
 
 

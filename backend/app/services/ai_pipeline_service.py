@@ -24,6 +24,7 @@ from app.services.damage_description_services import (
     assess_damage,
 )
 from app.services.decision_service import generate_decision
+from app.services.notification_service import notify_assessor_review
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ async def run_decision_pipeline(claim_id: int, db: AsyncSession) -> AIDecision |
             decision_stub.reason_summary,
             output_payload={"pii_status": "failed"},
         )
+        await notify_assessor_review(db, claim_id=claim_id, decision_id=decision_stub.decision_id)
         return None
 
     decision_stub = await get_or_create_decision(db, claim_id)
@@ -67,6 +69,7 @@ async def run_decision_pipeline(claim_id: int, db: AsyncSession) -> AIDecision |
     try:
         await assess_damage(claim_id, db)
     except (NoClaimImagesError, NoSanitisedImagesError):
+        await notify_assessor_review(db, claim_id=claim_id, decision_id=decision_stub.decision_id)
         return None
 
     return await generate_decision(claim_id, db)

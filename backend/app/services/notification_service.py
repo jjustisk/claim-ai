@@ -17,17 +17,21 @@ import logging
 from contextlib import suppress
 from enum import Enum
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas.models import Claim, Customer, Notification
 from app.config import settings
-from app.connectors.communication import send_email, send_sms
+from app.connectors.communication import send_email, send_sms, sms_configured
 
 logger = logging.getLogger(__name__)
 
 
 class NotificationEvent(str, Enum):
     SUBMITTED = "claim_submitted"
+    # The checks have finished and a person now has the claim. Not the same as
+    # UNDER_REVIEW below, which is an assessor escalating a claim after reviewing it.
+    WITH_ASSESSOR = "claim_with_assessor"
     UNDER_REVIEW = "decision_referred"
     APPROVED = "decision_approved"
     DECLINED = "decision_declined"
@@ -35,6 +39,7 @@ class NotificationEvent(str, Enum):
 
 _SUBJECT_BY_EVENT: dict[NotificationEvent, str] = {
     NotificationEvent.SUBMITTED: "We've received your claim",
+    NotificationEvent.WITH_ASSESSOR: "Your claim is with an assessor",
     NotificationEvent.UNDER_REVIEW: "Your claim is being reviewed",
     NotificationEvent.APPROVED: "Update on your claim",
     NotificationEvent.DECLINED: "Update on your claim",
@@ -168,7 +173,7 @@ async def notify_customer(
             status="sent" if sent else "failed",
         ))
 
-    if phone:
+    if phone and sms_configured():
         sent = await asyncio.to_thread(send_sms, phone, message)
         db.add(Notification(
             claim_id=claim.claim_id, customer_id=claim.customer_id, decision_id=decision_id,
@@ -176,7 +181,7 @@ async def notify_customer(
             status="sent" if sent else "failed",
         ))
 
-    if email or phone:
+    if email or (phone and sms_configured()):
         await db.commit()
 
 
@@ -187,3 +192,35 @@ async def notify_claim_submitted(db: AsyncSession, claim: Claim) -> None:
         f"touch as soon as there's an update. Thank you for your patience."
     )
     await notify_customer(db, claim=claim, event=NotificationEvent.SUBMITTED, message=message)
+
+
+async def notify_assessor_review(db: AsyncSession, *, claim_id: int, decision_id: int | None = None) -> None:
+    """Tell the customer their claim has moved on to an assessor.
+
+    Sent once per claim, whatever the pipeline outcome (a recommendation was saved, or the
+    automatic checks could not run). It never says what the checks concluded: the customer
+    hears the outcome only after an assessor has reviewed it. Never raises.
+    """
+    if not settings.notifications_enabled:
+        return
+    try:
+        already_sent = (await db.execute(
+            select(Notification.notif_id)
+            .where(Notification.claim_id == claim_id, Notification.trigger_source == NotificationEvent.WITH_ASSESSOR.value)
+            .limit(1)
+        )).first()
+        if already_sent:
+            return
+        claim = await db.get(Claim, claim_id)
+        if claim is None:
+            return
+        message = (
+            f"Hi {claim.claimant_name or 'there'}, your claim ({claim.claim_reference}) has been checked and "
+            f"passed to one of our licensed assessors, who will review it and make the final decision. "
+            f"We'll email you again as soon as there's an outcome."
+        )
+        await notify_customer(db, claim=claim, event=NotificationEvent.WITH_ASSESSOR, message=message, decision_id=decision_id)
+    except Exception:
+        logger.exception("Assessor-review notification failed claim_id=%s", claim_id)
+        with suppress(Exception):
+            await db.rollback()
