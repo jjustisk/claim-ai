@@ -13,6 +13,12 @@ export function formatMoney(value, { spaced = false } = {}) {
   return spaced ? `$ ${formatted}` : `$${formatted}`
 }
 
+// For fields the customer may leave blank: say so instead of showing a dash.
+export function formatMoneyOrNotProvided(value) {
+  if (value == null || value === '' || Number.isNaN(Number(value))) return 'Not provided'
+  return formatMoney(value)
+}
+
 export function confidencePercent(score) {
   if (score == null || score === '') return null
   const value = Number(score)
@@ -45,21 +51,46 @@ export function statusBadgeClass(status) {
   return TONE_BADGE[statusMeta(status).tone] || TONE_BADGE.slate
 }
 
-export function urgency(claim) {
-  const fraud = Number(claim?.fraud_risk_score) || 0
-  const priority = Number(claim?.priority_level) || 0
-  if (fraud >= 0.5 || priority >= 3) return 'High'
-  if (fraud >= 0.3 || priority >= 2) return 'Medium'
-  return 'Low'
+const RESOLVED_STATUSES = ['approved', 'rejected', 'closed']
+const DAY_MS = 86_400_000
+const POSSIBLE_FRAUD_AT = 0.35 // same cut-off the backend uses to flag warning signs
+const LONG_WAIT_DAYS = 3
+const LARGE_CLAIM = 20000
+
+export function daysWaiting(claim, now = Date.now()) {
+  const submitted = new Date(claim?.submission_date).getTime()
+  return Number.isFinite(submitted) ? Math.max(0, Math.floor((now - submitted) / DAY_MS)) : 0
 }
 
-const URGENCY_RANK = { High: 3, Medium: 2, Low: 1 }
+const URGENCY_RANK = { High: 3, Medium: 2, Low: 1, Done: 0 }
 
-export function urgencyRank(claim) {
-  return URGENCY_RANK[urgency(claim)]
+// What an assessor can act on: possible fraud, how long it has waited, an escalation, or a large claim.
+export function urgencyInfo(claim, now = Date.now()) {
+  if (RESOLVED_STATUSES.includes(claim?.status)) return { level: 'Done', reason: 'Decision recorded' }
+
+  const waited = daysWaiting(claim, now)
+  const days = `${waited} day${waited === 1 ? '' : 's'}`
+  const estimate = Number(claim?.estimated_value)
+  const causes = []
+  if ((Number(claim?.fraud_risk_score) || 0) >= POSSIBLE_FRAUD_AT) causes.push({ level: 'High', reason: 'Possible fraud' })
+  if (waited >= LONG_WAIT_DAYS) causes.push({ level: 'High', reason: `Waiting ${days}` })
+  if (claim?.status === 'under_review') causes.push({ level: 'Medium', reason: 'Escalated' })
+  if (waited >= 1) causes.push({ level: 'Medium', reason: `Waiting ${days}` })
+  if (Number.isFinite(estimate) && estimate >= LARGE_CLAIM) causes.push({ level: 'Medium', reason: 'Large claim' })
+
+  const top = causes.reduce((best, cause) => (!best || URGENCY_RANK[cause.level] > URGENCY_RANK[best.level] ? cause : best), null)
+  return top || { level: 'Low', reason: 'Submitted today' }
 }
 
-const URGENCY_TEXT = { High: 'text-red-600', Medium: 'text-yellow-600', Low: 'text-green-600' }
+export function urgency(claim, now) {
+  return urgencyInfo(claim, now).level
+}
+
+export function urgencyRank(claim, now) {
+  return URGENCY_RANK[urgency(claim, now)]
+}
+
+const URGENCY_TEXT = { High: 'text-red-600', Medium: 'text-yellow-600', Low: 'text-green-600', Done: 'text-gray-500' }
 
 export function urgencyClass(level) {
   return URGENCY_TEXT[level] || 'text-gray-600'

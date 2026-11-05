@@ -1,0 +1,30 @@
+{
+  "how_to_edit": "Developers: change a unit_cost value in this file and restart the backend. Keep each item id unchanged.",
+  "items": [
+    {"id": "call_out", "product": "property", "label": "Tradesperson call-out and access", "unit": "per job", "unit_cost": 250},
+    {"id": "roof_tile", "product": "property", "label": "Roof tile, replace", "unit": "each", "unit_cost": 55},
+    {"id": "ridge_capping", "product": "property", "label": "Ridge capping, rebed and repoint", "unit": "per metre", "unit_cost": 80},
+    {"id": "roof_sheeting", "product": "property", "label": "Roof sheeting (metal), replace", "unit": "per m²", "unit_cost": 130},
+    {"id": "gutter", "product": "property", "label": "Gutter, replace", "unit": "per metre", "unit_cost": 55},
+    {"id": "roof_tarp", "product": "property", "label": "Emergency roof tarp", "unit": "per roof section", "unit_cost": 450},
+    {"id": "ceiling_plasterboard", "product": "property", "label": "Plasterboard ceiling, repair or replace", "unit": "per m²", "unit_cost": 85},
+    {"id": "ceiling_repaint", "product": "property", "label": "Ceiling repaint", "unit": "per room", "unit_cost": 350},
+    {"id": "wall_repair", "product": "property", "label": "Wall plaster repair and paint", "unit": "per m²", "unit_cost": 70},
+    {"id": "carpet_replace", "product": "property", "label": "Carpet and underlay, replace", "unit": "per m²", "unit_cost": 90},
+    {"id": "water_extraction", "product": "property", "label": "Water extraction and drying", "unit": "per room", "unit_cost": 700},
+    {"id": "window_pane", "product": "property", "label": "Window pane, replace", "unit": "each", "unit_cost": 500},
+    {"id": "sliding_door_glass", "product": "property", "label": "Sliding door glass, replace", "unit": "each", "unit_cost": 900},
+    {"id": "door_lock", "product": "property", "label": "Door lock, replace", "unit": "each", "unit_cost": 220},
+    {"id": "entry_door", "product": "property", "label": "Entry door, replace", "unit": "each", "unit_cost": 1200},
+    {"id": "fence", "product": "property", "label": "Fence (timber or Colorbond)", "unit": "per metre", "unit_cost": 110},
+    {"id": "garage_door", "product": "property", "label": "Garage door, replace", "unit": "each", "unit_cost": 1800},
+    {"id": "smoke_clean", "product": "property", "label": "Smoke and soot cleaning", "unit": "per room", "unit_cost": 2000},
+    {"id": "bumper", "product": "motor", "label": "Bumper bar, repair and respray", "unit": "each", "unit_cost": 750},
+    {"id": "door_panel", "product": "motor", "label": "Door panel, repair and respray", "unit": "each", "unit_cost": 1100},
+    {"id": "bonnet_boot", "product": "motor", "label": "Bonnet or boot, repair and respray", "unit": "each", "unit_cost": 1200},
+    {"id": "panel_paint", "product": "motor", "label": "Single panel, paint only", "unit": "each", "unit_cost": 550},
+    {"id": "windscreen", "product": "motor", "label": "Windscreen, replace", "unit": "each", "unit_cost": 550},
+    {"id": "headlight", "product": "motor", "label": "Headlight assembly, replace", "unit": "each", "unit_cost": 650},
+    {"id": "side_mirror", "product": "motor", "label": "Side mirror, replace", "unit": "each", "unit_cost": 350}
+  ]
+}

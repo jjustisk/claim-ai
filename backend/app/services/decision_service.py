@@ -40,6 +40,7 @@ from app.services.damage_description_services import (
 from app.services.fraud_scoring_service import compute_fraud_flag
 from app.services.notification_service import notify_assessor_review
 from app.services.policy_retrieval_service import retrieve_clauses
+from app.services.repair_cost_service import price_repairs, prompt_block
 from app.services.policy_schedule_ingestion_service import parse_scenario_excesses
 
 SELF_CONSISTENCY_SAMPLES = 3  # only for moderate-band results
@@ -84,6 +85,11 @@ class ClauseReference(BaseModel):
     )
 
 
+class RepairItem(BaseModel):
+    item_id: str = Field(description="An id copied exactly from the REPAIR PRICE LIST.")
+    quantity: float = Field(ge=0.0, description="How many units are needed, in the unit shown for that item.")
+
+
 class Decision(BaseModel):
     # Order is reason -> cite -> rate -> decide -> estimate -> write; each field is context for the next.
     reasoning: str = Field(
@@ -114,10 +120,17 @@ class Decision(BaseModel):
     coverage_decision: CoverageDecision = Field(
         description="covered, partial or excluded, per the coverage decision rules."
     )
+    repair_items: list[RepairItem] = Field(
+        description=(
+            "Items from the REPAIR PRICE LIST needed to repair the covered damage, with quantities. "
+            "Empty if nothing on the list applies or the claim is excluded."
+        )
+    )
     suggested_payout: float = Field(
         ge=0.0,
         description="Your own rough, non-binding repair/replacement cost estimate in Australian dollars, "
-        "before any excess or policy limit is applied. 0 if excluded or not estimable from the evidence.",
+        "before any excess or policy limit is applied. Used only when repair_items is empty. "
+        "0 if excluded or not estimable from the evidence.",
     )
     assessor_summary: str = Field(
         description="1-2 sentences for the assessor: the recommendation and the main reason for it."
@@ -155,7 +168,7 @@ METHOD
 3. Read the coverage clause, then the linked exclusions and definitions. Decide whether the cause and the damage fall within the cover, and whether any exclusion applies.
 4. Choose coverage_decision using the rules below.
 5. Rate adjusted_consistency and adjusted_rag using the calibration anchors below.
-6. Estimate suggested_payout.
+6. List the repair_items needed and, only if the price list does not cover the damage, estimate suggested_payout.
 7. Write the assessor fields, then the customer fields.
 
 COVERAGE DECISION RULES
@@ -178,7 +191,8 @@ CALIBRATION: adjusted_rag (how well the retrieved clause supports your coverage 
 Use values between anchors where they fit better. When unsure between two anchors, choose the lower.
 
 PAYOUT
-suggested_payout is your rough, non-binding repair or replacement cost in Australian dollars, before any excess or policy limit. Those figures are applied automatically afterwards, so never subtract them yourself and never quote them as the payout. Base the estimate on the damage description and severity, using the claimant's own estimate only as a reference point. Use 0 if excluded or not reasonably estimable.
+repair_items: choose the items from the REPAIR PRICE LIST needed to repair the covered damage and give a quantity for each, using only item ids from that list and quantities supported by the photo assessment and the claimant statement (for example the number of tiles, metres of fence or square metres of ceiling). Prices are applied automatically, so never state prices. Leave it empty if nothing on the list applies.
+suggested_payout is your rough, non-binding repair or replacement cost in Australian dollars, before any excess or policy limit, and is used only when repair_items is empty. Those figures are applied automatically afterwards, so never subtract them yourself and never quote them as the payout. Base the estimate on the damage description and severity, using the claimant's own estimate only as a reference point. Use 0 if excluded or not reasonably estimable.
 
 ASSESSOR FIELDS
 - assessor_summary: 1-2 sentences giving the recommendation and the main reason.
@@ -249,17 +263,22 @@ def _resolve_excess(excesses: dict[str, Decimal], context_text: str, flat_excess
 
 
 def _estimate_payout(
-    parsed: Decision, policy: Policy, assessment: ClaimDamageAssessment, claim: Claim,
-) -> tuple[Decimal | None, str | None]:
-    """Deterministically clamps the model's own non-binding suggested_payout
-    against this claim's actual applicable excess and the policy's max
-    payout. Returns (final_payout, note_for_memo). Never trusts the model's
-    raw number as-is - per the team's own decision, this is a fixed amount,
-    not a range, and it's always bounded by real policy figures, never by
-    the model's say-so alone.
+    parsed: Decision, policy: Policy, assessment: ClaimDamageAssessment, claim: Claim, priced: dict,
+) -> tuple[Decimal | None, str | None, str | None]:
+    """Work out the payout from a repair estimate, then the policy excess and maximum.
+
+    The repair estimate comes from the price list when the model picked items from it, otherwise from the
+    model's own rough figure. Returns (payout, note, basis); when no payout can be given the note says why.
     """
-    if parsed.coverage_decision == CoverageDecision.EXCLUDED or parsed.suggested_payout <= 0:
-        return None, None
+    if parsed.coverage_decision == CoverageDecision.EXCLUDED:
+        return None, None, None
+
+    if priced["total"] > 0:
+        raw, basis = Decimal(str(priced["total"])), "price_list"
+    else:
+        raw, basis = Decimal(str(parsed.suggested_payout)), "model_estimate"
+    if raw <= 0:
+        return None, "No repair cost could be worked out.", None
 
     excesses = parse_scenario_excesses(policy.schedule_details)
     redacted = sanitised_claim_record(claim)
@@ -268,9 +287,8 @@ def _estimate_payout(
     applicable_excess = _resolve_excess(excesses, context_text, policy.excess)
 
     if applicable_excess is None and policy.max_payout is None:
-        return None, "Payout not estimated: policy has no excess or max payout on file."
+        return None, "No payout worked out: this policy has no excess or maximum payout on file.", None
 
-    raw = Decimal(str(parsed.suggested_payout))
     after_excess = raw - applicable_excess if applicable_excess is not None else raw
     if policy.max_payout is not None:
         after_excess = min(after_excess, policy.max_payout - (applicable_excess or Decimal(0)))
@@ -280,12 +298,12 @@ def _estimate_payout(
         (label for label, amount in excesses.items() if amount == applicable_excess and label != "basic excess"),
         "basic excess" if applicable_excess is not None else None,
     )
+    source = "from the repair price list" if basis == "price_list" else "estimated from the photos; nothing on the price list matched"
     note = (
-        f"Suggested payout ${raw:,.2f}, less {excess_label or 'flat'} excess "
-        f"${(applicable_excess or Decimal(0)):,.2f}, capped at policy max payout "
-        f"where applicable: ${final_payout:,.2f}."
+        f"Repair estimate ${raw:,.2f} ({source}), less {excess_label or 'flat'} excess "
+        f"${(applicable_excess or Decimal(0)):,.2f}, capped at the policy maximum where applicable: ${final_payout:,.2f}."
     )
-    return final_payout, note
+    return final_payout, note, basis
 
 
 async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
@@ -377,15 +395,16 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
         retrieval_capped = retrieval_capped or capped_again
 
     parsed, dropped_refs = _with_valid_citations(parsed, retrieval)
+    priced = price_repairs(product.insurance_type, parsed.repair_items)
     cited_clauses = _cited_clauses(retrieval)
 
     decision = DECISION_REFER if band == "low" else parsed.coverage_decision.value
 
     # Never attach a payment figure when referring or declining.
     if decision in (DECISION_REFER, CoverageDecision.EXCLUDED.value):
-        payout, payout_note = None, None
+        payout, payout_note, payout_basis = None, None, None
     else:
-        payout, payout_note = _estimate_payout(parsed, policy, assessment, claim)
+        payout, payout_note, payout_basis = _estimate_payout(parsed, policy, assessment, claim, priced)
 
     if band == "low":
         memo_parts = _low_band_memo_parts(parsed, composite, sc_info, fraud_flag)
@@ -435,6 +454,11 @@ async def generate_decision(claim_id: int, db: AsyncSession) -> AIDecision:
             "self_consistency_agreement": sc_info["agreement"],
             "suggested_payout_raw": parsed.suggested_payout,
             "payout": float(payout) if payout is not None else None,
+            "payout_note": payout_note,
+            "payout_basis": payout_basis,
+            "repair_breakdown": priced["lines"],
+            "repair_total": priced["total"],
+            "unpriced_items": priced["unknown_items"],
             "confidence_score": composite,
             "band": band,
             "memo": memo_parts,
@@ -618,6 +642,9 @@ def _build_prompt(
         f"- Affected areas: {', '.join(areas) if areas else 'not recorded'}",
         f"- Description: {assessment.damage_description}",
         f"- Reasoning: {assessment.reasoning}",
+        "",
+        "REPAIR PRICE LIST (choose item ids for repair_items; prices are applied automatically)",
+        *prompt_block(product.insurance_type),
         "",
         "CONSISTENCY CHECK (claimant statement vs photos)",
         f"- consistency_flag: {consistency.consistency_flag:.2f} (1.0 fully consistent, 0.1 contradiction)",

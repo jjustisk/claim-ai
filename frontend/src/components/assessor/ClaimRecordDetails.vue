@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronDown, ChevronUp, ExternalLink } from 'lucide-vue-next'
-import { formatDate, formatMoney, statusMeta } from '../../utils/claim'
+import { formatDate, formatMoneyOrNotProvided, statusMeta } from '../../utils/claim'
 
 const props = defineProps({
   claim: { type: Object, required: true },
@@ -31,7 +31,7 @@ function yesNo(value) {
 }
 
 function row(label, value) {
-  const text = value == null || value === '' ? '—' : value
+  const text = value == null || value === '' ? 'Not provided' : value
   return { label, value: text }
 }
 
@@ -43,7 +43,7 @@ const policyRows = computed(() => {
     row('Policy', [c.policy_number, c.coverage_type].filter(Boolean).join(' — ')),
     row('Submitted', formatDate(c.submission_date)),
     row('Warning signs', warningSigns.value),
-    row('Estimated value', formatMoney(c.estimated_value ?? c.cost)),
+    row('Customer’s estimate', formatMoneyOrNotProvided(c.estimated_value)),
   ]
 })
 

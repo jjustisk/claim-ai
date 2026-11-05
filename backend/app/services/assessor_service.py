@@ -708,6 +708,7 @@ def _decision_step(
             "confidence_score": score,
             "band": band,
             "payout": payout,
+            "payout_note": output.get("payout_note"),
             "retrieval_capped": output.get("retrieval_capped"),
             "self_consistency_samples": output.get("self_consistency_samples"),
             "self_consistency_agreement": output.get("self_consistency_agreement"),
@@ -752,6 +753,12 @@ def build_ai_assessment(
         "status": status,
         "decision": value,
         "recommended_payout": _number((decision or {}).get("suggested_payout")),
+        "payout_breakdown": {
+            "basis": output.get("payout_basis"),
+            "lines": output.get("repair_breakdown") if isinstance(output.get("repair_breakdown"), list) else [],
+            "repair_total": _number(output.get("repair_total")),
+            "note": output.get("payout_note"),
+        },
         "confidence": {
             "score": score,
             "band": band,

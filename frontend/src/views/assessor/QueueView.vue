@@ -29,11 +29,11 @@ import { api } from '../../api/client'
 import {
   damageLabel,
   formatDate,
-  formatMoney,
+  formatMoneyOrNotProvided,
   statusBadgeClass,
   statusMeta,
-  urgency,
   urgencyClass,
+  urgencyInfo,
   urgencyRank,
 } from '../../utils/claim'
 
@@ -92,7 +92,7 @@ function damageIcon(label) {
 
 const timeOf = (claim) => new Date(claim.submission_date || 0).getTime() || 0
 const amountOf = (claim) => {
-  const raw = claim.cost ?? claim.estimated_value
+  const raw = claim.estimated_value
   const value = raw == null || raw === '' ? NaN : Number(raw)
   return Number.isFinite(value) ? value : -Infinity
 }
@@ -107,7 +107,7 @@ const SORTS = {
 const rows = computed(() =>
   [...claims.value].sort(SORTS[sortBy.value] || SORTS.urgency).map((claim) => {
     const type = damageLabel(claim)
-    const level = urgency(claim)
+    const { level, reason } = urgencyInfo(claim)
     return {
       claim,
       type,
@@ -116,6 +116,7 @@ const rows = computed(() =>
       statusClass: statusBadgeClass(claim.status),
       statusIcon: STATUS_ICONS[claim.status] || AlertCircle,
       urgency: level,
+      urgencyReason: reason,
       urgencyClass: urgencyClass(level),
       description: String(claim.incident_description || '').replace(/\s+/g, ' ').trim(),
     }
@@ -170,7 +171,7 @@ function openClaim(claim) {
           <select v-model="sortBy" class="field w-auto min-w-[200px] pl-9">
             <option value="urgency">Urgency (high → low)</option>
             <option value="newest">Newest first</option>
-            <option value="amount">Amount (high → low)</option>
+            <option value="amount">Customer's estimate (high → low)</option>
           </select>
         </label>
       </div>
@@ -219,7 +220,7 @@ function openClaim(claim) {
               <th class="px-6 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase">Type</th>
               <th class="px-6 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase">Status</th>
               <th class="px-6 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase">Urgency</th>
-              <th class="px-6 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase">Amount</th>
+              <th class="px-6 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase">Customer's estimate</th>
               <th class="px-6 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase">Date</th>
             </tr>
           </thead>
@@ -263,10 +264,14 @@ function openClaim(claim) {
               </td>
               <td class="px-6 py-4">
                 <span class="text-sm font-semibold" :class="row.urgencyClass">{{ row.urgency }}</span>
+                <p class="text-xs whitespace-nowrap text-gray-500">{{ row.urgencyReason }}</p>
               </td>
               <td class="px-6 py-4">
-                <span class="font-semibold whitespace-nowrap text-gray-900">
-                  {{ formatMoney(row.claim.cost ?? row.claim.estimated_value) }}
+                <span
+                  class="whitespace-nowrap"
+                  :class="row.claim.estimated_value == null ? 'text-sm text-gray-400' : 'font-semibold text-gray-900'"
+                >
+                  {{ formatMoneyOrNotProvided(row.claim.estimated_value) }}
                 </span>
               </td>
               <td class="px-6 py-4 text-sm whitespace-nowrap text-gray-500">{{ formatDate(row.claim.submission_date) }}</td>

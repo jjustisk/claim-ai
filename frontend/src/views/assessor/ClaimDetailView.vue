@@ -22,7 +22,7 @@ import RecommendationCard from '../../components/assessor/RecommendationCard.vue
 import SimilarImageCard from '../../components/assessor/SimilarImageCard.vue'
 import { POLICY_DOCUMENT_KEY, usePolicyDocument } from '../../components/assessor/usePolicyDocument'
 import { buildRecommendation } from '../../utils/aiSteps'
-import { damageLabel, errorText, formatDate, formatMoney, statusMeta, urgency } from '../../utils/claim'
+import { damageLabel, errorText, formatDate, formatMoney, formatMoneyOrNotProvided, statusMeta, urgencyInfo } from '../../utils/claim'
 
 const props = defineProps({ id: { type: [String, Number], required: true } })
 const router = useRouter()
@@ -87,14 +87,19 @@ const status = computed(() => {
   const meta = statusMeta(claim.value?.status)
   return { label: meta.label, classes: STATUS_TONES[meta.tone] || 'bg-gray-100 text-gray-600' }
 })
-const urgencyLevel = computed(() => urgency(claim.value))
+const urgencyDetail = computed(() => urgencyInfo(claim.value))
+const urgencyLevel = computed(() => urgencyDetail.value.level)
 const urgencyClass = computed(
-  () => ({ High: 'text-red-600', Medium: 'text-amber-600', Low: 'text-emerald-600' })[urgencyLevel.value] || 'text-gray-800',
+  () => ({ High: 'text-red-600', Medium: 'text-amber-600', Low: 'text-emerald-600', Done: 'text-gray-500' })[urgencyLevel.value] || 'text-gray-800',
 )
+
+const breakdown = computed(() => assessment.value?.payout_breakdown ?? null)
+const breakdownLines = computed(() => (Array.isArray(breakdown.value?.lines) ? breakdown.value.lines : []))
+const payoutNote = computed(() => breakdown.value?.note || '')
 
 function syncDrafts() {
   explanation.value = aiExplanation.value
-  // Never fall back to the customer's estimate — that is not an AI payout.
+  // Never fall back to the customer's estimate — that is not a suggested payout.
   payout.value = aiPayout.value == null ? '' : String(aiPayout.value)
   explanationDirty.value = false
   payoutDirty.value = false
@@ -109,7 +114,9 @@ const recommendedPayoutLabel = computed(() => {
   }
   if (decisionValue.value === 'refer_to_assessor') return 'No payout suggested — sent for your review'
   if (decisionValue.value === 'excluded') return 'No payout suggested — decline recommended'
-  if (payout.value === '' || payout.value == null) return 'No payout amount could be worked out'
+  if (payout.value === '' || payout.value == null) {
+    return payoutNote.value || 'No repair cost could be worked out.'
+  }
   return null
 })
 const payoutDisplay = computed(() => {
@@ -271,12 +278,15 @@ async function confirmReview(notes) {
               <p class="font-medium text-gray-800">{{ damageLabel(claim) }}</p>
             </div>
             <div>
-              <p class="mb-0.5 text-xs tracking-wide text-gray-400 uppercase">Estimated Damage</p>
-              <p class="font-medium text-gray-800">{{ formatMoney(claim.estimated_value ?? claim.cost) }}</p>
+              <p class="mb-0.5 text-xs tracking-wide text-gray-400 uppercase">Customer's estimate</p>
+              <p class="font-medium" :class="claim.estimated_value == null ? 'text-gray-400' : 'text-gray-800'">
+                {{ formatMoneyOrNotProvided(claim.estimated_value) }}
+              </p>
             </div>
             <div>
               <p class="mb-0.5 text-xs tracking-wide text-gray-400 uppercase">Urgency</p>
               <p class="font-medium" :class="urgencyClass">{{ urgencyLevel }}</p>
+              <p class="text-xs text-gray-500">{{ urgencyDetail.reason }}</p>
             </div>
           </div>
         </div>
@@ -360,6 +370,20 @@ async function confirmReview(notes) {
             </button>
           </div>
           <p v-if="payoutModified" class="mt-2 text-xs text-amber-600">{{ payoutModified }}</p>
+          <div v-if="breakdownLines.length && !editingPayout" class="mt-4 border-t border-gray-100 pt-3">
+            <p class="mb-2 text-xs font-semibold tracking-wide text-gray-400 uppercase">How this was worked out</p>
+            <ul class="space-y-1 text-sm text-gray-700">
+              <li v-for="line in breakdownLines" :key="line.item_id" class="flex justify-between gap-3">
+                <span class="min-w-0">
+                  {{ line.quantity }} × {{ line.label }}
+                  <span class="text-gray-400">({{ formatMoney(line.unit_cost) }} {{ line.unit }})</span>
+                </span>
+                <span class="shrink-0 font-medium">{{ formatMoney(line.total) }}</span>
+              </li>
+            </ul>
+            <p v-if="payoutNote" class="mt-2 text-xs leading-relaxed text-gray-500">{{ payoutNote }}</p>
+          </div>
+          <p v-else-if="payoutNote && !recommendedPayoutLabel && !editingPayout" class="mt-3 text-xs leading-relaxed text-gray-500">{{ payoutNote }}</p>
           <p class="mt-3 text-xs text-gray-400">Suggested amount only. The customer's own estimate is shown in the claim header.</p>
         </div>
 
