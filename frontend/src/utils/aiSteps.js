@@ -4,12 +4,12 @@ import { AlertTriangle, CheckCircle, Clock, Eye, Lock, Scale, Search, ShieldChec
 const NEUTRAL_ICON = { iconBg: 'bg-gray-100', iconColor: 'text-gray-500' }
 
 export const AI_STEPS = [
-  { key: 'pii_reduction', label: 'Privacy screening', icon: markRaw(Lock), ...NEUTRAL_ICON },
-  { key: 'damage_description', label: 'AI damage description & analysis', icon: markRaw(Search), ...NEUTRAL_ICON },
-  { key: 'consistency_check', label: 'Statement vs photo consistency check', icon: markRaw(Eye), ...NEUTRAL_ICON },
-  { key: 'fraud_check', label: 'Fraud & duplicate image check', icon: markRaw(ShieldCheck), ...NEUTRAL_ICON },
-  { key: 'policy_match', label: 'Policy clause matching', icon: markRaw(Scale), ...NEUTRAL_ICON },
-  { key: 'decision', label: 'AI recommendation & confidence', icon: markRaw(Sparkles), iconBg: 'bg-violet-100', iconColor: 'text-violet-500' },
+  { key: 'pii_reduction', label: 'Personal details protected', icon: markRaw(Lock), ...NEUTRAL_ICON },
+  { key: 'damage_description', label: 'Photos reviewed', icon: markRaw(Search), ...NEUTRAL_ICON },
+  { key: 'consistency_check', label: 'Account matches photos', icon: markRaw(Eye), ...NEUTRAL_ICON },
+  { key: 'fraud_check', label: 'Warning signs', icon: markRaw(ShieldCheck), ...NEUTRAL_ICON },
+  { key: 'policy_match', label: 'Policy match', icon: markRaw(Scale), ...NEUTRAL_ICON },
+  { key: 'decision', label: 'Overall recommendation', icon: markRaw(Sparkles), ...NEUTRAL_ICON },
 ]
 
 const STEP_BY_KEY = Object.fromEntries(AI_STEPS.map((step) => [step.key, step]))
@@ -28,10 +28,10 @@ export function orderSteps(steps) {
 }
 
 const STEP_STATUS = {
-  pass: { label: 'Passed', dotBg: 'bg-emerald-100', icon: markRaw(CheckCircle), iconColor: 'text-emerald-600', subtitleClass: 'text-gray-500', subtitleIcon: null },
-  flag: { label: 'Flagged for assessor awareness', dotBg: 'bg-amber-100', icon: markRaw(AlertTriangle), iconColor: 'text-amber-600', subtitleClass: 'text-amber-600', subtitleIcon: markRaw(AlertTriangle) },
-  fail: { label: 'Failed', dotBg: 'bg-red-100', icon: markRaw(XCircle), iconColor: 'text-red-600', subtitleClass: 'text-red-600', subtitleIcon: markRaw(XCircle) },
-  pending: { label: 'Not run yet', dotBg: 'bg-gray-100', icon: markRaw(Clock), iconColor: 'text-gray-400', subtitleClass: 'text-gray-500', subtitleIcon: null },
+  pass: { label: 'All clear', dotBg: 'bg-emerald-100', icon: markRaw(CheckCircle), iconColor: 'text-emerald-600', subtitleClass: 'text-gray-500', subtitleIcon: null },
+  flag: { label: 'Needs a look', dotBg: 'bg-amber-100', icon: markRaw(AlertTriangle), iconColor: 'text-amber-600', subtitleClass: 'text-amber-600', subtitleIcon: markRaw(AlertTriangle) },
+  fail: { label: 'Problem', dotBg: 'bg-red-100', icon: markRaw(XCircle), iconColor: 'text-red-600', subtitleClass: 'text-red-600', subtitleIcon: markRaw(XCircle) },
+  pending: { label: 'Not done yet', dotBg: 'bg-gray-100', icon: markRaw(Clock), iconColor: 'text-gray-400', subtitleClass: 'text-gray-500', subtitleIcon: null },
   skipped: { label: 'Skipped', dotBg: 'bg-gray-100', icon: markRaw(Clock), iconColor: 'text-gray-400', subtitleClass: 'text-gray-500', subtitleIcon: null },
 }
 
@@ -40,14 +40,14 @@ export function stepStatusMeta(status) {
 }
 
 const AUDIT_LABELS = {
-  pii_reduction: 'Privacy screening',
-  damage_description: 'AI damage description & analysis',
-  consistency_check: 'Statement vs photo consistency check',
-  fraud_check: 'Fraud & duplicate image check',
-  policy_match: 'Policy clause matching',
-  retrieval: 'Policy clause matching',
-  generation: 'AI recommendation & confidence',
-  decision: 'AI recommendation & confidence',
+  pii_reduction: 'Personal details protected',
+  damage_description: 'Photos reviewed',
+  consistency_check: 'Account matched against photos',
+  fraud_check: 'Warning signs checked',
+  policy_match: 'Policy matched',
+  retrieval: 'Policy matched',
+  generation: 'Recommendation prepared',
+  decision: 'Recommendation prepared',
 }
 
 export function auditActionLabel(actionType) {
@@ -55,25 +55,97 @@ export function auditActionLabel(actionType) {
 }
 
 const RECOMMENDATIONS = {
-  approve: { label: 'APPROVE', pill: 'bg-emerald-50 text-emerald-700 border-emerald-200', box: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-700' },
-  reject: { label: 'REJECT', pill: 'bg-red-50 text-red-700 border-red-200', box: 'bg-red-50 border-red-200', text: 'text-red-700' },
-  escalate: { label: 'ESCALATE', pill: 'bg-amber-50 text-amber-700 border-amber-200', box: 'bg-amber-50 border-amber-200', text: 'text-amber-700' },
+  approve: { key: 'approve', label: 'Approve', pill: 'bg-emerald-50 text-emerald-700 border-emerald-200', box: 'bg-emerald-50 border-emerald-200', text: 'text-emerald-700' },
+  review: { key: 'review', label: 'Review', pill: 'bg-amber-50 text-amber-700 border-amber-200', box: 'bg-amber-50 border-amber-200', text: 'text-amber-700' },
+  decline: { key: 'decline', label: 'Decline recommended', pill: 'bg-red-50 text-red-700 border-red-200', box: 'bg-red-50 border-red-200', text: 'text-red-700' },
 }
 
+function isCoveredDecision(value) {
+  return value === 'covered' || value === 'partial' || value.includes('approv')
+}
+
+function isExcludedDecision(value) {
+  return value === 'excluded' || value.includes('reject') || value.includes('declin')
+}
+
+// Simple mapping from the stored decision alone (no checks); used when no assessment detail is available.
 export function recommendationMeta(decision) {
   const value = String(decision || '').toLowerCase()
   if (!value || value === 'pending') return null
-  if (value === 'partial') return { ...RECOMMENDATIONS.approve, label: 'APPROVE (PARTIAL)' }
-  if (value === 'covered' || value.includes('approv')) return RECOMMENDATIONS.approve
-  if (value === 'excluded' || value.includes('reject') || value.includes('declin')) return RECOMMENDATIONS.reject
-  return RECOMMENDATIONS.escalate
+  if (isCoveredDecision(value)) return RECOMMENDATIONS.approve
+  if (isExcludedDecision(value)) return RECOMMENDATIONS.decline
+  return RECOMMENDATIONS.review
+}
+
+const SURENESS = { high: 'Strong', moderate: 'Moderate', low: 'Limited' }
+
+function reviewReason(byKey, concerns, covered, excluded) {
+  if (byKey.pii_reduction?.status === 'fail') return "Personal details couldn't be protected, so the automatic checks didn't run."
+  if (byKey.damage_description && ['flag', 'fail'].includes(byKey.damage_description.status)) {
+    return "The photos weren't clear enough to judge the damage."
+  }
+  if (byKey.fraud_check?.status === 'flag') {
+    const ref = byKey.fraud_check.details?.image_match?.matched_claim_reference
+    return ref ? `A photo matches one on claim ${ref}.` : 'There are warning signs in this customer\'s claim history.'
+  }
+  if (byKey.consistency_check?.status === 'flag') return "The customer's account doesn't fully match the photos."
+  if (byKey.policy_match?.status === 'flag') {
+    return byKey.policy_match.details?.action === 'incorrect'
+      ? 'No policy section clearly matches this claim.'
+      : "It's unclear which policy section applies."
+  }
+  if (excluded) return 'This looks like it is not covered, but it needs a check first.'
+  if (covered) return 'Likely covered, but not certain enough to approve without a look.'
+  return concerns.length ? 'Some checks need your attention.' : 'Sent for your review.'
+}
+
+// One clear recommendation: Approve only when the decision is covered, the checks are strong and nothing was
+// flagged. A clear exclusion with nothing flagged is Decline. Anything unsure or flagged (including possible
+// fraud) goes to Review so a person decides.
+export function buildRecommendation(assessment, decisionValue) {
+  const value = String(decisionValue || '').toLowerCase()
+  if (!value || value === 'pending') return null
+
+  const steps = Array.isArray(assessment?.steps) ? assessment.steps : []
+  const byKey = Object.fromEntries(steps.map((step) => [step.key, step]))
+  const concerns = steps.filter((step) => step.key !== 'decision' && (step.status === 'flag' || step.status === 'fail'))
+  const band = confidenceBand(assessment?.confidence?.score, assessment?.confidence?.band)
+  const clauses = Array.isArray(assessment?.clauses) ? assessment.clauses : []
+  const covered = isCoveredDecision(value)
+  const excluded = isExcludedDecision(value)
+  const partial = value === 'partial'
+
+  const strong = band === 'high' || band == null
+  let kind = 'review'
+  if (covered && strong && !concerns.length) kind = 'approve'
+  else if (excluded && band !== 'low' && !concerns.length) kind = 'decline'
+
+  const section = sectionLabel((clauses.find((clause) => excluded === isExclusion(clause)) || clauses[0])?.section_ref)
+  let reason
+  if (kind === 'approve') {
+    reason = partial
+      ? `Covered in part${section ? ` under ${section}` : ''}. The suggested amount reflects what isn't covered.`
+      : `Covered${section ? ` under ${section}` : ' by the policy'}.${steps.length ? ' The photos match the account and nothing looks wrong.' : ''}`
+  } else if (kind === 'decline') {
+    reason = `The policy doesn't cover this${section ? ` (${section})` : ''}.`
+  } else {
+    reason = reviewReason(byKey, concerns, covered, excluded)
+  }
+
+  return {
+    ...RECOMMENDATIONS[kind],
+    reason,
+    partial: partial && kind === 'approve',
+    possibleFraud: byKey.fraud_check?.status === 'flag',
+    sureness: SURENESS[band] || null,
+  }
 }
 
 const DECISION_LABELS = {
   covered: 'Covered',
-  partial: 'Partially covered',
-  excluded: 'Excluded — not covered',
-  refer_to_assessor: 'Referred to assessor',
+  partial: 'Covered in part',
+  excluded: 'Not covered',
+  refer_to_assessor: 'Sent for review',
   pending: 'Pending',
 }
 

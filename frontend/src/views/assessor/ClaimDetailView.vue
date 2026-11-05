@@ -17,11 +17,11 @@ import AiSteps from '../../components/assessor/AiSteps.vue'
 import AssessorMemo from '../../components/assessor/AssessorMemo.vue'
 import AuditLog from '../../components/assessor/AuditLog.vue'
 import ClaimRecordDetails from '../../components/assessor/ClaimRecordDetails.vue'
-import ConfidenceCard from '../../components/assessor/ConfidenceCard.vue'
 import DecisionModal from '../../components/assessor/DecisionModal.vue'
+import RecommendationCard from '../../components/assessor/RecommendationCard.vue'
 import SimilarImageCard from '../../components/assessor/SimilarImageCard.vue'
 import { POLICY_DOCUMENT_KEY, usePolicyDocument } from '../../components/assessor/usePolicyDocument'
-import { recommendationMeta } from '../../utils/aiSteps'
+import { buildRecommendation } from '../../utils/aiSteps'
 import { damageLabel, errorText, formatDate, formatMoney, statusMeta, urgency } from '../../utils/claim'
 
 const props = defineProps({ id: { type: [String, Number], required: true } })
@@ -60,7 +60,7 @@ const aiStatus = computed(() => {
 const hasDecision = computed(() => Boolean(aiStatus.value) && aiStatus.value !== 'pending')
 const inProgress = computed(() => aiStatus.value === 'pending' || (!aiStatus.value && claim.value?.status === 'submitted'))
 const decisionValue = computed(() => assessment.value?.decision ?? latestDecision.value?.decision ?? null)
-const recommendation = computed(() => recommendationMeta(decisionValue.value))
+const recommendation = computed(() => buildRecommendation(assessment.value, decisionValue.value))
 const aiPayout = computed(() => {
   const value = assessment.value ? assessment.value.recommended_payout : latestDecision.value?.suggested_payout
   return value == null || value === '' ? null : value
@@ -105,11 +105,11 @@ function syncDrafts() {
 const recommendedPayoutLabel = computed(() => {
   if (payoutDirty.value && payout.value !== '') return null
   if (!hasDecision.value) {
-    return inProgress.value ? 'AI assessment in progress — no payout calculated yet' : 'No automated recommendation is available yet'
+    return inProgress.value ? 'Checks in progress — no payout worked out yet' : 'No recommendation is available yet'
   }
-  if (decisionValue.value === 'refer_to_assessor') return 'No payout recommended — referred for manual review'
-  if (decisionValue.value === 'excluded') return 'No payout recommended — decline recommended'
-  if (payout.value === '' || payout.value == null) return 'No payout amount has been calculated'
+  if (decisionValue.value === 'refer_to_assessor') return 'No payout suggested — sent for your review'
+  if (decisionValue.value === 'excluded') return 'No payout suggested — decline recommended'
+  if (payout.value === '' || payout.value == null) return 'No payout amount could be worked out'
   return null
 })
 const payoutDisplay = computed(() => {
@@ -118,8 +118,8 @@ const payoutDisplay = computed(() => {
 })
 const payoutModified = computed(() => {
   if (!payoutDirty.value || payout.value === '') return ''
-  if (aiPayout.value == null) return 'Set manually — no AI payout was suggested'
-  return Number(payout.value) !== Number(aiPayout.value) ? `Modified from AI suggestion of ${formatMoney(aiPayout.value)}` : ''
+  if (aiPayout.value == null) return 'Set by you — no payout was suggested'
+  return Number(payout.value) !== Number(aiPayout.value) ? `Changed from the suggested ${formatMoney(aiPayout.value)}` : ''
 })
 const explanationModified = computed(() => explanationDirty.value && explanation.value !== aiExplanation.value)
 
@@ -258,7 +258,7 @@ async function confirmReview(notes) {
               <p class="mt-0.5 text-sm text-gray-500">{{ claim.customer_name }} — {{ claim.policy_number }}</p>
             </div>
             <span v-if="recommendation" class="shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold" :class="recommendation.pill">
-              AI: {{ recommendation.label }}
+              {{ recommendation.label }}
             </span>
           </div>
           <div class="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
@@ -293,7 +293,7 @@ async function confirmReview(notes) {
           </div>
           <ul v-if="otherFiles.length" class="space-y-1.5">
             <li v-for="file in otherFiles" :key="file.id">
-              <a :href="file.url" target="_blank" rel="noopener" class="inline-flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800">
+              <a :href="file.url" target="_blank" rel="noopener" class="inline-flex items-center gap-2 text-sm text-blue-700 hover:text-blue-900">
                 <FileText class="h-4 w-4 shrink-0" />
                 <span class="break-all">{{ file.label }}</span>
                 <ExternalLink class="h-3.5 w-3.5 shrink-0" />
@@ -311,7 +311,7 @@ async function confirmReview(notes) {
         <ClaimRecordDetails :claim="claim" />
 
         <div class="flex items-center gap-2 pt-3">
-          <p class="text-xs font-bold tracking-widest text-gray-400 uppercase">AI Assessment</p>
+          <p class="text-xs font-bold tracking-widest text-gray-400 uppercase">Your decision</p>
           <div class="h-px flex-1 bg-gray-200" />
         </div>
 
@@ -319,8 +319,8 @@ async function confirmReview(notes) {
 
         <div class="rounded-xl border border-gray-200 bg-white p-6">
           <div class="mb-4 flex items-center justify-between gap-3">
-            <h2 class="text-sm font-semibold tracking-wide text-gray-900 uppercase">Recommended Payout</h2>
-            <span class="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700">AI Draft · Editable</span>
+            <h2 class="text-sm font-semibold tracking-wide text-gray-900 uppercase">Suggested Payout</h2>
+            <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">Suggested · You can edit</span>
           </div>
           <div v-if="editingPayout" class="flex items-center gap-2">
             <span class="text-lg font-medium text-gray-500">$</span>
@@ -330,8 +330,8 @@ async function confirmReview(notes) {
               type="number"
               min="0"
               step="1"
-              aria-label="Recommended payout"
-              class="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-violet-300 focus:outline-none"
+              aria-label="Suggested payout"
+              class="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-300 focus:outline-none"
               @input="payoutDirty = true"
               @keydown.enter.prevent="editingPayout = false"
             />
@@ -360,14 +360,14 @@ async function confirmReview(notes) {
             </button>
           </div>
           <p v-if="payoutModified" class="mt-2 text-xs text-amber-600">{{ payoutModified }}</p>
-          <p class="mt-3 text-xs text-gray-400">AI recommendation only — the customer's own estimate is shown in the claim header.</p>
+          <p class="mt-3 text-xs text-gray-400">Suggested amount only. The customer's own estimate is shown in the claim header.</p>
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white p-6">
           <div class="mb-4 flex items-center justify-between gap-3">
             <h2 class="text-sm font-semibold tracking-wide text-gray-900 uppercase">Customer Explanation</h2>
             <div class="flex items-center gap-2">
-              <span class="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700">AI Draft · Editable</span>
+              <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">Suggested · You can edit</span>
               <button
                 v-if="!editingExplanation"
                 type="button"
@@ -385,7 +385,7 @@ async function confirmReview(notes) {
               v-focus
               rows="6"
               aria-label="Customer explanation"
-              class="w-full resize-y rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-violet-300 focus:outline-none"
+              class="w-full resize-y rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-300 focus:outline-none"
               @input="explanationDirty = true"
             />
             <button
@@ -399,9 +399,9 @@ async function confirmReview(notes) {
           </div>
           <p v-else-if="explanation" class="text-sm leading-relaxed whitespace-pre-line text-gray-700">{{ explanation }}</p>
           <p v-else class="text-sm text-gray-500">
-            {{ inProgress ? 'The customer explanation will appear once the AI assessment completes.' : 'No customer explanation has been generated yet.' }}
+            {{ inProgress ? 'The customer explanation will appear once the checks finish.' : 'No customer explanation has been generated yet.' }}
           </p>
-          <p v-if="explanationModified" class="mt-2 text-xs text-amber-600">Edited from AI draft</p>
+          <p v-if="explanationModified" class="mt-2 text-xs text-amber-600">Edited from the suggested text</p>
           <p class="mt-3 text-xs text-gray-400">The customer is notified by email when you record a decision.</p>
         </div>
 
@@ -421,7 +421,7 @@ async function confirmReview(notes) {
               @click="openReview('rejected')"
             >
               <XCircle class="h-5 w-5" />
-              Reject
+              Decline
             </button>
             <button
               type="button"
@@ -443,12 +443,7 @@ async function confirmReview(notes) {
 
       <aside class="lg:col-span-1">
         <div class="space-y-4 lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
-          <ConfidenceCard
-            :assessment="assessment"
-            :recommendation="recommendation"
-            :fallback-score="hasDecision ? latestDecision?.confidence_score ?? null : null"
-            :in-progress="inProgress"
-          />
+          <RecommendationCard :recommendation="recommendation" :status="assessment?.status ?? null" :in-progress="inProgress" />
           <AiSteps :assessment="assessment" :similar-match="similarMatch" :in-progress="inProgress" />
           <SimilarImageCard v-if="similarMatch" :match="similarMatch" compact />
         </div>

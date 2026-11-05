@@ -40,7 +40,7 @@ async function openInPds() {
 <template>
   <div class="rounded-lg border border-gray-200 bg-white p-4">
     <div v-if="refLabel || isExclusion(clause) || matchPercent != null" class="mb-1.5 flex flex-wrap items-center gap-2">
-      <span v-if="refLabel" class="rounded border border-violet-100 bg-violet-50 px-2 py-0.5 text-xs font-semibold text-violet-700">
+      <span v-if="refLabel" class="rounded border border-gray-200 bg-gray-50 px-2 py-0.5 text-xs font-semibold text-gray-700">
         {{ refLabel }}
       </span>
       <span v-if="isExclusion(clause)" class="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">
@@ -60,11 +60,11 @@ async function openInPds() {
     <div v-if="policyDocument" class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
       <button
         type="button"
-        class="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+        class="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:text-blue-900 disabled:opacity-50"
         :disabled="opening"
         @click="openInPds"
       >
-        {{ opening ? 'Opening…' : 'Open in PDS' }}
+        {{ opening ? 'Opening…' : 'Open policy document' }}
         <ExternalLink class="h-3.5 w-3.5" />
       </button>
       <span v-if="page" class="text-xs text-gray-400">Page {{ page }}</span>

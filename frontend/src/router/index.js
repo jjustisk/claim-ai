@@ -20,6 +20,14 @@ const routes = [
     props: true,
   },
 
+  {
+    path: '/assessor/claims/:id/form',
+    name: 'assessor-claim-form',
+    component: () => import('../views/assessor/ClaimFullFormView.vue'),
+    meta: { role: 'assessor' },
+    props: true,
+  },
+
   // Claimant
   {
     path: '/my-claims',

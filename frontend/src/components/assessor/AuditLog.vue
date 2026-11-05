@@ -18,15 +18,15 @@ const open = ref(false)
       :aria-expanded="open"
       @click="open = !open"
     >
-      <span class="text-sm font-semibold tracking-wide text-gray-900 uppercase">Full audit log</span>
+      <span class="text-sm font-semibold tracking-wide text-gray-900 uppercase">Activity history</span>
       <span class="flex items-center gap-2 text-xs text-gray-400">
-        {{ entries.length }} {{ entries.length === 1 ? 'entry' : 'entries' }}
+        {{ entries.length }} {{ entries.length === 1 ? 'event' : 'events' }}
         <ChevronUp v-if="open" class="h-4 w-4" />
         <ChevronDown v-else class="h-4 w-4" />
       </span>
     </button>
     <div v-if="open" class="border-t border-gray-100 px-6 py-4">
-      <p v-if="!entries.length" class="text-sm text-gray-500">No audit entries have been recorded for this claim.</p>
+      <p v-if="!entries.length" class="text-sm text-gray-500">No activity has been recorded for this claim yet.</p>
       <ol v-else class="space-y-3">
         <li v-for="(entry, i) in entries" :key="entry.log_id ?? i" class="border-l-2 border-gray-200 pl-3">
           <div class="flex flex-wrap items-baseline justify-between gap-x-3">

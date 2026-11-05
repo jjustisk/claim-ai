@@ -11,12 +11,12 @@ const props = defineProps({
   inProgress: { type: Boolean, default: false },
 })
 
-const open = ref(false)
+const open = ref(true)
 const steps = computed(() => orderSteps(props.assessment?.steps))
 const summary = computed(() => {
-  if (!steps.value.length) return props.inProgress ? 'In progress' : 'No steps recorded'
+  if (!steps.value.length) return props.inProgress ? 'In progress' : 'Nothing recorded'
   const flagged = steps.value.filter((s) => s.status === 'flag' || s.status === 'fail').length
-  return `${steps.value.length} steps${flagged ? ` · ${flagged} flagged` : ' · all passed'}`
+  return flagged ? `${flagged} of ${steps.value.length} need a look` : 'All clear'
 })
 </script>
 
@@ -30,7 +30,7 @@ const summary = computed(() => {
     >
       <ListChecks class="h-4 w-4 shrink-0 text-gray-500" />
       <div class="min-w-0 flex-1">
-        <h2 class="text-sm font-semibold tracking-wide text-gray-900 uppercase">AI assessment steps</h2>
+        <h2 class="text-sm font-semibold tracking-wide text-gray-900 uppercase">What we checked</h2>
         <p class="mt-0.5 text-xs text-gray-400">{{ summary }}</p>
       </div>
       <ChevronUp v-if="open" class="h-4 w-4 text-gray-400" />
@@ -38,13 +38,13 @@ const summary = computed(() => {
     </button>
     <div v-if="open" class="border-t border-gray-100 p-3">
       <template v-if="steps.length">
-        <p class="mb-2 px-1 text-xs text-gray-400">Expand a step to see its evidence.</p>
+        <p class="mb-2 px-1 text-xs text-gray-400">Open a check to see what it found.</p>
         <AiStepRow v-for="(step, i) in steps" :key="step.key || i" :step="step" compact>
           <AiStepDetails :step="step" :assessment="assessment" :similar-match="similarMatch" />
         </AiStepRow>
       </template>
       <p v-else class="px-2 py-2 text-sm text-gray-500">
-        {{ inProgress ? 'AI assessment in progress — steps will appear here as they complete.' : 'No AI pipeline steps have been recorded for this claim.' }}
+        {{ inProgress ? 'The checks are running. Results will appear here as they finish.' : 'No checks have been recorded for this claim.' }}
       </p>
     </div>
   </section>

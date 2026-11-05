@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { Sparkles } from 'lucide-vue-next'
+import { FileText } from 'lucide-vue-next'
 import DetailField from './DetailField.vue'
 import PolicyClauseCard from './PolicyClauseCard.vue'
 import { mergeClauses } from '../../utils/aiSteps'
@@ -26,10 +26,10 @@ const referred = computed(() => props.assessment?.status === 'referred')
 
 <template>
   <div class="overflow-hidden rounded-xl border border-gray-200 bg-white">
-    <div class="flex items-center gap-2 border-b border-gray-100 bg-gradient-to-r from-violet-50 to-indigo-50 px-6 py-4">
-      <Sparkles class="h-4 w-4 text-violet-600" />
-      <h2 class="text-sm font-semibold text-gray-900">Assessor Memo</h2>
-      <span class="ml-2 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700">AI Generated</span>
+    <div class="flex items-center gap-2 border-b border-gray-100 bg-gray-50 px-6 py-4">
+      <FileText class="h-4 w-4 text-gray-500" />
+      <h2 class="text-sm font-semibold text-gray-900">Summary</h2>
+      <span class="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600">Prepared automatically</span>
     </div>
     <div class="space-y-5 p-6">
       <template v-if="memo">
@@ -38,18 +38,18 @@ const referred = computed(() => props.assessment?.status === 'referred')
       </template>
       <p v-else-if="memoText" class="text-sm leading-relaxed whitespace-pre-wrap text-gray-700">{{ memoText }}</p>
       <p v-else-if="inProgress || assessment?.status === 'pending'" class="text-sm text-gray-500">
-        AI assessment in progress — check back shortly.
+        The checks are still running. Check back shortly.
       </p>
       <p v-else-if="referred" class="text-sm text-gray-500">
-        This claim was referred for manual review before an assessor memo could be generated. Check the steps below to see where it stopped.
+        This claim was sent for review before a summary could be written. See “What we checked” to find out why.
       </p>
-      <p v-else class="text-sm text-gray-500">No AI assessment is available for this claim.</p>
+      <p v-else class="text-sm text-gray-500">No summary is available for this claim.</p>
 
       <div v-if="clauses.length" class="space-y-3">
-        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">Policy clauses</p>
+        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">Policy sections</p>
         <PolicyClauseCard v-for="(clause, i) in clauses" :key="`${clause.section_ref}-${i}`" :clause="clause" variant="memo" />
       </div>
-      <p v-else-if="memo" class="text-sm text-gray-500">No policy clauses were cited.</p>
+      <p v-else-if="memo" class="text-sm text-gray-500">No policy sections were cited.</p>
     </div>
   </div>
 </template>

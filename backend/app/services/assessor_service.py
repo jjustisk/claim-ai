@@ -24,12 +24,12 @@ from app.services.claim_pii_service import load_pii_mapping_for_claim, rehydrate
 from app.services.sanitization_service import sanitize_free_text
 
 AI_STEPS = (
-    ("pii_reduction", "Privacy screening"),
-    ("damage_description", "AI damage description & analysis"),
-    ("consistency_check", "Statement vs photo consistency check"),
-    ("fraud_check", "Fraud & duplicate image check"),
-    ("policy_match", "Policy clause matching"),
-    ("decision", "AI recommendation & confidence"),
+    ("pii_reduction", "Personal details protected"),
+    ("damage_description", "Photos reviewed"),
+    ("consistency_check", "Account matches photos"),
+    ("fraud_check", "Warning signs"),
+    ("policy_match", "Policy match"),
+    ("decision", "Overall recommendation"),
 )
 AI_STEP_LABELS = dict(AI_STEPS)
 
@@ -41,9 +41,9 @@ FRAUD_FLAG_THRESHOLD = 0.35
 DECISION_PENDING = "pending"
 DECISION_REFER = "refer_to_assessor"
 _DECISION_LABELS = {
-    "covered": "approving the claim (covered)",
-    "partial": "approving part of the claim (partial cover)",
-    "excluded": "declining the claim (excluded)",
+    "covered": "approving the claim",
+    "partial": "approving the claim, with part of it not covered",
+    "excluded": "declining the claim, as the policy does not cover it",
 }
 
 STATUS_LABELS = {
@@ -377,8 +377,8 @@ def _step(key: str, status: str, summary: str, timestamp: Any, details: dict[str
 def _not_run(final: bool) -> tuple[str, str]:
     """Return the status and summary for a step that has no data yet."""
     if final:
-        return "skipped", "Not run: the pipeline stopped at an earlier step."
-    return "pending", "Waiting for this step to run."
+        return "skipped", "Not done: an earlier check stopped the process."
+    return "pending", "Not done yet."
 
 
 def _clauses(output: dict[str, Any]) -> list[dict[str, Any]]:
@@ -426,17 +426,15 @@ def _pii_step(claim: dict[str, Any], row: dict[str, Any] | None, final: bool) ->
     description = (row or {}).get("description") or ""
     reason = None
     if pii_status in ("queued", "processing"):
-        status, summary = "pending", "Masking personal details before AI analysis."
+        status, summary = "pending", "Hiding personal details before the checks run."
     elif pii_status == "failed" or (pii_status != "ready" and "fail" in description.lower()):
         reason = _short(description.removeprefix("PII reduction failed:"), 160) or None
         status = "fail"
-        summary = f"Privacy screening failed, so no AI model was run: {reason}" if reason else (
-            "Privacy screening failed, so no AI model was run."
-        )
+        summary = "Personal details could not be protected, so the automatic checks did not run."
     elif pii_status == "ready" or row:
-        status, summary = "pass", "Personal details were masked before any AI model saw the claim."
+        status, summary = "pass", "Personal details were hidden before any automatic check saw the claim."
     elif final:
-        status, summary = "skipped", "No privacy screening record for this claim."
+        status, summary = "skipped", "No privacy check was recorded for this claim."
     else:
         status, summary = _not_run(final)
     details = {"pii_status": pii_status, "reason": reason}
@@ -466,7 +464,7 @@ def _damage_step(
         return _step(
             "damage_description",
             "fail",
-            "The AI could not assess the claim photos.",
+            "The photos could not be assessed.",
             row.get("timestamp"),
             {"reasoning": rehydrate(row.get("description"))},
         )
@@ -485,7 +483,7 @@ def _damage_step(
     obj = data.get("object_identified")
     assessed, available = data.get("images_assessed"), data.get("images_available")
     if data.get("images_assessable") is False:
-        status, summary = "flag", "The photos were not clear enough for the AI to assess the damage."
+        status, summary = "flag", "The photos were not clear enough to judge the damage."
     else:
         status = "pass"
         if severity == "none":
@@ -494,7 +492,7 @@ def _damage_step(
             finding = " ".join(part for part in (severity, damage_type) if part) + " damage"
         summary = f"{obj}: {finding.lower()}" if obj else finding[:1].upper() + finding[1:]
         if assessed is not None and available is not None:
-            summary += f" ({assessed} of {_plural(int(available), 'photo')} assessed)"
+            summary += f" ({assessed} of {_plural(int(available), 'photo')} reviewed)"
         summary += "."
     affected = data.get("affected_areas")
     return _step(
@@ -536,21 +534,21 @@ def _consistency_step(
     count = len(discrepancies)
     if flag >= CONSISTENCY_PASS_THRESHOLD:
         status = "pass"
-        summary = f"The claimant's account matches the photos (score {flag:.2f})."
+        summary = "The customer's account matches the photos."
         if count:
             summary = (
-                f"The claimant's account broadly matches the photos, with "
-                f"{_plural(count, 'minor difference')} (score {flag:.2f})."
+                f"The customer's account broadly matches the photos, with "
+                f"{_plural(count, 'minor difference')}."
             )
     else:
         status = "flag"
         if count:
             summary = (
-                f"{_plural(count, 'discrepancy', 'discrepancies')} between the claimant's account "
-                f"and the photos (score {flag:.2f})."
+                f"{_plural(count, 'difference')} between the customer's account "
+                f"and the photos."
             )
         else:
-            summary = f"The claimant's account only partly matches the photos (score {flag:.2f})."
+            summary = "The customer's account only partly matches the photos."
     return _step(
         "consistency_check",
         status,
@@ -595,16 +593,16 @@ def _fraud_step(
     reasons = []
     if image_match:
         other = image_match["matched_claim_reference"] or f"#{image_match['matched_claim_id']}"
-        reasons.append(f"a submitted photo closely matches an image on claim {other}")
-    if fraud_flag >= FRAUD_FLAG_THRESHOLD:
-        reasons.append(f"the fraud risk score of {fraud_flag:.2f} is at or above the {FRAUD_FLAG_THRESHOLD} threshold")
+        reasons.append(f"a submitted photo closely matches a photo on claim {other}")
+    elif fraud_flag >= FRAUD_FLAG_THRESHOLD:
+        reasons.append("this customer's claim history or timing raises a concern")
     if reasons:
         status = "flag"
         summary = "; ".join(reasons)
         summary = summary[:1].upper() + summary[1:] + "."
     else:
         status = "pass"
-        summary = f"No duplicate photos found and the fraud risk score is low ({fraud_flag:.2f})."
+        summary = "No matching photos on other claims, and nothing unusual in this customer's claim history."
     return _step(
         "fraud_check",
         status,
@@ -635,21 +633,21 @@ def _policy_step(
         return _step("policy_match", status, summary, (generation or {}).get("timestamp"), {})
 
     needs_review = bool(inputs.get("retrieval_needs_human_review"))
-    refs = ", ".join(str(c["section_ref"]) for c in clauses[:3] if c.get("section_ref"))
+    refs = ", ".join(str(c["section_ref"]).rstrip(".") for c in clauses[:3] if c.get("section_ref"))
     if action == "correct" and not needs_review and clauses:
         status = "pass"
-        summary = f"Matched policy {'clause' if len(clauses) == 1 else 'clauses'} {refs}." if refs else (
-            "Matched a policy clause."
+        summary = f"Matches policy {'section' if len(clauses) == 1 else 'sections'} {refs}." if refs else (
+            "Matches a policy section."
         )
     elif action == "incorrect" or not clauses:
         status = "flag"
-        summary = "No policy clause clearly matched this claim; check the PDS."
+        summary = "No policy section clearly matches this claim. Check the policy document."
     else:
         status = "flag"
         summary = (
-            f"More than one clause could apply ({refs}); assessor should confirm."
+            f"More than one policy section could apply ({refs}). Please confirm which."
             if refs
-            else "The clause match is uncertain; assessor should confirm."
+            else "It is unclear which policy section applies. Please confirm."
         )
     return _step(
         "policy_match",
@@ -686,23 +684,18 @@ def _decision_step(
         status = "flag"
         if score is None:
             reason = _short(rehydrate(decision.get("reason_summary") or (generation or {}).get("description")))
-            summary = f"Referred to an assessor before scoring: {reason}" if reason else (
-                "Referred to an assessor before scoring."
-            )
+            summary = f"Sent for your review: {reason}" if reason else "Sent for your review."
         elif band == "low":
-            summary = (
-                f"Referred to an assessor: {score:.0f}% confidence is below the "
-                f"{MODERATE_CONFIDENCE_THRESHOLD}% threshold."
-            )
+            summary = "Sent for your review: the checks were not conclusive enough to recommend a decision."
         else:
-            summary = f"Referred to an assessor at {score:.0f}% confidence."
+            summary = "Sent for your review."
     else:
         status = "pass" if band == "high" else "flag"
         label = _DECISION_LABELS.get(value, value)
         summary = (
-            f"Recommends {label} with {score:.0f}% confidence ({band})."
-            if score is not None
-            else f"Recommends {label}."
+            f"Recommends {label}."
+            if band == "high" or score is None
+            else f"Leaning towards {label}, but not certain enough to recommend without your review."
         )
     return _step(
         "decision",

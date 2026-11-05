@@ -4,7 +4,6 @@ import { useRouter } from 'vue-router'
 import { AlertTriangle, CheckCircle, ExternalLink } from 'lucide-vue-next'
 import DetailField from './DetailField.vue'
 import PolicyClauseCard from './PolicyClauseCard.vue'
-import ScoreBar from './ScoreBar.vue'
 import { formatMoney } from '../../utils/claim'
 import {
   confidenceBand,
@@ -51,8 +50,8 @@ function plural(count, word) {
 const privacy = computed(() => {
   const d = details.value
   const defaults = {
-    pass: 'Names, contact details and other personal information are replaced with placeholders before any text or photo is sent to an AI model (Privacy Act 1988, APP 11).',
-    fail: 'Because screening did not complete, no AI model was called. Assess this claim manually.',
+    pass: 'Names, contact details and other personal information are replaced with placeholders before any automatic check sees the claim text or photos (Privacy Act 1988, APP 11).',
+    fail: 'This step did not finish, so the automatic checks did not run. Please assess this claim manually.',
   }
   const masked = pick(d, 'masked_count', 'entities_masked', 'pii_count', 'entity_count')
   return {
@@ -69,14 +68,14 @@ const damage = computed(() => {
     { label: 'Object identified', value: humanise(pick(d, 'object_identified', 'object')) },
     { label: 'Damage type', value: humanise(pick(d, 'damage_type', 'type')) },
     { label: 'Severity', value: humanise(pick(d, 'severity')) },
-    { label: 'Damage age', value: humanise(pick(d, 'damage_age_estimate', 'damage_age', 'age')) },
+    { label: 'How old the damage looks', value: humanise(pick(d, 'damage_age_estimate', 'damage_age', 'age')) },
   ].filter((tile) => tile.value)
   const assessed = pick(d, 'images_assessed', 'images.assessed')
   const available = pick(d, 'images_available', 'images_total', 'image_count', 'images.available')
   let images = ''
-  if (assessed != null && available != null) images = `${assessed} of ${plural(available, 'image')} assessed`
-  else if (assessed != null) images = `${plural(assessed, 'image')} assessed`
-  else if (available != null) images = `${plural(available, 'image')} available`
+  if (assessed != null && available != null) images = `${assessed} of ${plural(available, 'photo')} reviewed`
+  else if (assessed != null) images = `${plural(assessed, 'photo')} reviewed`
+  else if (available != null) images = `${plural(available, 'photo')} available`
   return {
     description: pick(d, 'damage_description', 'description'),
     tiles,
@@ -122,8 +121,11 @@ const fraud = computed(() => {
     const days = pick(d, ...dayPaths)
     frequency = days == null ? 'No previous claims on record' : `${plural(days, 'day')} since the previous claim`
   }
+  const risk = unitToPercent(pick(d, 'fraud_flag', 'fraud_risk', 'fraud_score'))
+  let level = ''
+  if (risk != null) level = risk >= 35 ? 'Check closely' : risk > 0 ? 'Some warning signs' : 'None found'
   return {
-    risk: unitToPercent(pick(d, 'fraud_flag', 'fraud_risk', 'fraud_score')),
+    level,
     history: history.join(' · '),
     frequency,
   }
@@ -131,7 +133,7 @@ const fraud = computed(() => {
 
 const RETRIEVAL_ACTIONS = {
   correct: 'Clear match',
-  ambiguous: 'Ambiguous — more than one clause could apply',
+  ambiguous: 'More than one section could apply',
   incorrect: 'No clear match',
 }
 
@@ -159,14 +161,14 @@ const decision = computed(() => {
   let selfConsistency = ''
   if (typeof raw === 'string') selfConsistency = raw
   else if (Number(samples) > 1) {
-    selfConsistency = `Confidence was borderline, so the decision was re-run ${samples} times${agreement ? ` — ${agreement} runs agreed on this outcome` : ''}.`
+    selfConsistency = `The result was borderline, so it was re-checked ${samples} times${agreement ? `. ${agreement} of ${samples} agreed on this outcome` : ''}.`
   } else if (Number(samples) === 1) {
-    selfConsistency = 'Single run — confidence was clear enough that no re-check was needed.'
+    selfConsistency = 'The result was clear, so no re-check was needed.'
   }
   return {
     coverage: decisionLabel(pick(d, 'decision', 'coverage_decision') ?? props.assessment?.decision),
     score,
-    band: band ? humanise(band) : '',
+    sureness: { high: 'Strong', moderate: 'Moderate', low: 'Limited' }[band] || '',
     payout,
     payoutNote: pick(d, 'payout_note'),
     reasoning: pick(d, 'reasoning'),
@@ -199,12 +201,12 @@ const genericRows = computed(() =>
 
     <template v-else-if="step.key === 'damage_description'">
       <div v-if="damage.description">
-        <p class="mb-1.5 text-xs font-semibold tracking-wide text-violet-700 uppercase">What the AI observed in the photos</p>
-        <p class="rounded-lg border border-violet-100 bg-violet-50 p-3 text-sm leading-relaxed text-gray-700">{{ damage.description }}</p>
+        <p class="mb-1.5 text-xs font-semibold tracking-wide text-gray-500 uppercase">What the photos show</p>
+        <p class="rounded-lg border border-gray-100 bg-white p-3 text-sm leading-relaxed text-gray-700">{{ damage.description }}</p>
       </div>
       <div v-if="damage.notAssessable" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
         <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-        <p class="text-sm text-amber-700">The photos were not clear or complete enough for a confident assessment.</p>
+        <p class="text-sm text-amber-700">The photos were not clear or complete enough to judge the damage.</p>
       </div>
       <div v-if="damage.tiles.length" class="grid grid-cols-2 gap-3">
         <div v-for="tile in damage.tiles" :key="tile.label" class="rounded-lg border border-gray-100 bg-white p-3">
@@ -222,8 +224,7 @@ const genericRows = computed(() =>
     </template>
 
     <template v-else-if="step.key === 'consistency_check'">
-      <ScoreBar v-if="consistency.score != null" :score="consistency.score" label="Statement–photo consistency" />
-      <DetailField v-if="consistency.discrepancies.length" label="Discrepancies">
+      <DetailField v-if="consistency.discrepancies.length" label="Differences found">
         <ul class="space-y-1.5">
           <li v-for="(item, i) in consistency.discrepancies" :key="i" class="flex items-start gap-2 text-sm text-gray-700">
             <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
@@ -233,7 +234,7 @@ const genericRows = computed(() =>
       </DetailField>
       <p v-else-if="consistency.hasDiscrepancyList" class="flex items-center gap-2 text-sm text-gray-700">
         <CheckCircle class="h-4 w-4 shrink-0 text-emerald-500" />
-        No discrepancies found between the statement and the photos.
+        No differences found between the customer's account and the photos.
       </p>
       <DetailField v-if="consistency.reasoning" label="Reasoning" :value="consistency.reasoning" />
     </template>
@@ -242,10 +243,12 @@ const genericRows = computed(() =>
       <div v-if="flagged" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
         <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
         <p class="text-sm text-amber-700">
-          One or more awareness flags were raised. These do not constitute evidence of fraud and are provided for assessor transparency only.
+          Warning signs were found. These are not proof of fraud, so please check before relying on them.
         </p>
       </div>
-      <ScoreBar v-if="fraud.risk != null" :score="fraud.risk" label="Fraud risk signal (lower is better)" invert />
+      <p v-if="fraud.level" class="text-sm text-gray-700">
+        Overall: <span class="font-semibold text-gray-900">{{ fraud.level }}</span>
+      </p>
       <div v-if="fraud.history" class="border-l-2 border-gray-200 pl-3">
         <p class="mb-0.5 text-xs font-semibold tracking-wide text-gray-400 uppercase">Claim history</p>
         <p class="text-sm text-gray-700">{{ fraud.history }}</p>
@@ -255,54 +258,53 @@ const genericRows = computed(() =>
         <p class="text-sm text-gray-700">{{ fraud.frequency }}</p>
       </div>
       <div class="border-l-2 border-gray-200 pl-3">
-        <p class="mb-0.5 text-xs font-semibold tracking-wide text-gray-400 uppercase">Duplicate image check</p>
+        <p class="mb-0.5 text-xs font-semibold tracking-wide text-gray-400 uppercase">Photo match</p>
         <p v-if="imageMatch" class="text-sm text-gray-700">
           {{ imageMatch.closeness }} found on claim {{ imageMatch.reference }}.
-          <a :href="imageMatch.href" target="_blank" rel="noopener" class="ml-1 inline-flex items-center gap-1 font-medium text-indigo-600 hover:text-indigo-800">
+          <a :href="imageMatch.href" target="_blank" rel="noopener" class="ml-1 inline-flex items-center gap-1 font-medium text-blue-700 hover:text-blue-900">
             Open claim {{ imageMatch.reference }} in new tab
             <ExternalLink class="h-3.5 w-3.5" />
           </a>
         </p>
-        <p v-else class="text-sm text-gray-700">No similar images found on other claims.</p>
+        <p v-else class="text-sm text-gray-700">No matching photos found on other claims.</p>
       </div>
     </template>
 
     <template v-else-if="step.key === 'policy_match'">
       <div v-if="policy.needsReview" class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
         <AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-        <p class="text-sm text-amber-700">The clause match was ambiguous, so this claim was flagged for human review.</p>
+        <p class="text-sm text-amber-700">More than one policy section could apply, so a person needs to confirm which.</p>
       </div>
-      <DetailField v-if="policy.action" label="Retrieval outcome" :value="policy.action" />
+      <DetailField v-if="policy.action" label="How well it matches" :value="policy.action" />
       <DetailField v-if="policy.reasoning" label="Reasoning" :value="policy.reasoning" />
       <div v-if="policy.clauses.length" class="space-y-3">
-        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">Matched clauses</p>
+        <p class="text-xs font-semibold tracking-wide text-gray-400 uppercase">Policy sections</p>
         <PolicyClauseCard v-for="(clause, i) in policy.clauses" :key="`${clause.section_ref}-${i}`" :clause="clause" variant="evidence" />
       </div>
-      <p v-else class="text-sm text-gray-500">No policy clauses were matched.</p>
+      <p v-else class="text-sm text-gray-500">No policy sections were matched.</p>
     </template>
 
     <template v-else-if="step.key === 'decision'">
       <div class="grid grid-cols-2 gap-3">
         <div class="rounded-lg border border-gray-100 bg-white p-3">
-          <p class="mb-0.5 text-xs tracking-wide text-gray-400 uppercase">Coverage decision</p>
+          <p class="mb-0.5 text-xs tracking-wide text-gray-400 uppercase">Cover</p>
           <p class="text-sm font-medium text-gray-800">{{ decision.coverage || '—' }}</p>
         </div>
         <div class="rounded-lg border border-gray-100 bg-white p-3">
-          <p class="mb-0.5 text-xs tracking-wide text-gray-400 uppercase">Recommended payout</p>
-          <p class="text-sm font-medium text-gray-800">{{ decision.payout != null ? formatMoney(decision.payout) : 'No payout recommended' }}</p>
+          <p class="mb-0.5 text-xs tracking-wide text-gray-400 uppercase">Suggested payout</p>
+          <p class="text-sm font-medium text-gray-800">{{ decision.payout != null ? formatMoney(decision.payout) : 'No payout suggested' }}</p>
         </div>
       </div>
-      <div v-if="decision.score != null">
-        <ScoreBar :score="decision.score" label="Overall decision confidence" />
-        <p v-if="decision.band" class="mt-1 text-xs text-gray-400">{{ decision.band }} confidence band</p>
-      </div>
-      <p v-else class="text-sm text-gray-500">No automated confidence score — referred for manual review.</p>
+      <p v-if="decision.sureness" class="text-sm text-gray-700">
+        How sure we are: <span class="font-semibold text-gray-900">{{ decision.sureness }}</span>
+      </p>
+      <p v-else class="text-sm text-gray-500">No recommendation was made. The claim was sent for your review.</p>
       <p v-if="decision.capped" class="text-xs text-amber-600">
-        Confidence was capped at moderate because the policy clause match needed human review.
+        Held back from a firm approval because a person needs to confirm the policy match.
       </p>
       <DetailField v-if="decision.reasoning" label="Reasoning" :value="decision.reasoning" />
-      <DetailField v-if="decision.selfConsistency" label="Self-consistency check" :value="decision.selfConsistency" />
-      <DetailField v-if="decision.payoutNote" label="Payout note" :value="decision.payoutNote" />
+      <DetailField v-if="decision.selfConsistency" label="Double-check" :value="decision.selfConsistency" />
+      <DetailField v-if="decision.payoutNote" label="How the payout was worked out" :value="decision.payoutNote" />
     </template>
 
     <template v-else>

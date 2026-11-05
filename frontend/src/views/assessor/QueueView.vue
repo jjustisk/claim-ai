@@ -149,7 +149,7 @@ function openClaim(claim) {
     <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
       <div>
         <h2 class="text-2xl font-semibold text-gray-900">Claims Queue</h2>
-        <p class="mt-1 text-gray-600">Review and process insurance claims with AI assistance</p>
+        <p class="mt-1 text-gray-600">Review and decide on submitted claims</p>
       </div>
       <div class="flex flex-wrap items-center gap-3">
         <label class="relative block">

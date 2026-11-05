@@ -1,13 +1,28 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
+import { ChevronDown, ChevronUp, ExternalLink } from 'lucide-vue-next'
 import { formatDate, formatMoney, statusMeta } from '../../utils/claim'
 
 const props = defineProps({
   claim: { type: Object, required: true },
 })
 
+const router = useRouter()
 const open = ref(false)
+
+const formHref = computed(() =>
+  props.claim.claim_id == null
+    ? null
+    : router.resolve({ name: 'assessor-claim-form', params: { id: String(props.claim.claim_id) } }).href,
+)
+
+// Matches the 0.35 threshold the checks use to flag a claim; the raw score is never shown.
+const warningSigns = computed(() => {
+  const score = Number(props.claim.fraud_risk_score)
+  if (!Number.isFinite(score) || score <= 0) return 'None found'
+  return score >= 0.35 ? 'Check closely' : 'Some warning signs'
+})
 
 function yesNo(value) {
   if (value === true) return 'Yes'
@@ -27,8 +42,7 @@ const policyRows = computed(() => {
     row('Phone', c.customer_phone),
     row('Policy', [c.policy_number, c.coverage_type].filter(Boolean).join(' — ')),
     row('Submitted', formatDate(c.submission_date)),
-    row('Priority', c.priority_level ?? 0),
-    row('Fraud score', c.fraud_risk_score ?? 0),
+    row('Warning signs', warningSigns.value),
     row('Estimated value', formatMoney(c.estimated_value ?? c.cost)),
   ]
 })
@@ -47,16 +61,28 @@ const vehicleRows = computed(() => {
 
 <template>
   <section class="overflow-hidden rounded-xl border border-gray-200 bg-white">
-    <button
-      type="button"
-      class="flex w-full items-center justify-between px-6 py-4 text-left transition-colors hover:bg-gray-50"
-      :aria-expanded="open"
-      @click="open = !open"
-    >
-      <span class="text-sm font-semibold tracking-wide text-gray-900 uppercase">Full claim record</span>
-      <ChevronUp v-if="open" class="h-4 w-4 text-gray-400" />
-      <ChevronDown v-else class="h-4 w-4 text-gray-400" />
-    </button>
+    <div class="flex items-center gap-3 pr-6 transition-colors hover:bg-gray-50">
+      <button
+        type="button"
+        class="flex flex-1 items-center justify-between px-6 py-4 text-left"
+        :aria-expanded="open"
+        @click="open = !open"
+      >
+        <span class="text-sm font-semibold tracking-wide text-gray-900 uppercase">Full claim record</span>
+        <ChevronUp v-if="open" class="h-4 w-4 text-gray-400" />
+        <ChevronDown v-else class="h-4 w-4 text-gray-400" />
+      </button>
+      <a
+        v-if="formHref"
+        :href="formHref"
+        target="_blank"
+        rel="noopener"
+        class="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-blue-700 hover:text-blue-900 hover:underline"
+      >
+        Open full form
+        <ExternalLink class="h-3.5 w-3.5" />
+      </a>
+    </div>
     <div v-if="open" class="space-y-6 border-t border-gray-100 px-6 py-5 text-sm">
       <div>
         <h3 class="mb-3 text-xs font-bold tracking-widest text-gray-400 uppercase">Policy and claimant</h3>

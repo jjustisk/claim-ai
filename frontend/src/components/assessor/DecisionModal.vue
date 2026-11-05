@@ -16,8 +16,8 @@ const ACTIONS = {
     button: 'bg-emerald-600 hover:bg-emerald-700',
   },
   rejected: {
-    title: 'Reject Claim',
-    body: 'You are rejecting this claim. Provide a clear explanation for the record.',
+    title: 'Decline Claim',
+    body: 'You are declining this claim. Give a clear reason for the record.',
     button: 'bg-red-600 hover:bg-red-700',
   },
   under_review: {
@@ -59,7 +59,7 @@ function close() {
             id="review-notes"
             v-model="notes"
             rows="4"
-            class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-violet-300 focus:outline-none"
+            class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:ring-2 focus:ring-blue-300 focus:outline-none"
             placeholder="Add any additional notes or comments…"
           />
           <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
